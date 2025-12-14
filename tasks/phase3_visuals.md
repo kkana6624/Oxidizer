@@ -10,6 +10,8 @@ Phase 1 & 2 are complete. Core logic, Input, and Audio backend are ready.
 
 We are building a high-performance rhythm game interface.
 
+IMPORTANT: You are working in a headless environment. You cannot open windows or run GUI applications. Focus on implementing the code and verifying compilation.
+
 Step 1: Bevy Setup & Window Configuration
 
 Objective: Initialize Bevy with settings optimized for low latency and high refresh rates, designed to scale up to 4K resolution.
@@ -32,7 +34,9 @@ Resolution: 1920x1080 (default for windowed testing), but ensure the architectur
 
 High-DPI Support: Ensure the window respects the OS scale factor.
 
-Run: Verify a blank window opens and runs smoothly.
+Build Check: Run cargo check (or cargo build) to ensure dependencies are resolved and the code compiles.
+
+Constraint: Do NOT try to cargo run. It will panic due to missing display server.
 
 Step 2: Integrate Conductor as a Resource
 
@@ -52,7 +56,7 @@ Debug Text System:
 
 Create a system update_time_display that queries Res<Conductor> and updates a Text component on screen showing the current get_time().
 
-Verify the numbers count up smoothly when the app runs.
+Compilation Verification: Ensure the code logic for querying resources compiles correctly.
 
 Step 3: Visual Sync Test (Falling Note)
 
@@ -80,11 +84,7 @@ y_position = (note.target_time - current_time) * (LOGICAL_HEIGHT * SPEED_FACTOR)
 
 Update transform.translation.y.
 
-Observation:
-
-The note should fall smoothly.
-
-Even if the window is dragged (simulating lag), the note's position should "snap" to the correct audio time, proving the Conductor is authoritative.
+Final Check: Ensure src/main.rs compiles without errors. The user will run the application to verify visual smoothness.
 
 Action:
-Please execute Step 1 first. Ensure Bevy compiles and opens a window. Then proceed to Step 2 and Step 3.
+Please execute Step 1 first. Ensure Bevy compiles. Then proceed to Step 2 and Step 3.
