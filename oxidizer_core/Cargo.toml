@@ -10,5 +10,4 @@ crossbeam-channel = "0.5"
 atomic_float = "0.1"
 parking_lot = "0.12"
 glam = "0.27"
-gilrs = "0.10"
-cpal = "0.15"
+bevy = { version = "0.14", default-features = false, features = ["bevy_winit", "bevy_core_pipeline", "bevy_sprite", "bevy_text", "bevy_ui", "x11"] }
