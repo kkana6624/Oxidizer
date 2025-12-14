@@ -52,15 +52,37 @@ Note: You might need to wrap Conductor in a tuple struct or Arc<Mutex<...>> if i
 
 Keep AudioStream alive (store it in a variable in main, or insert it as a Non-Send resource so it doesn't get dropped).
 
+Conductor Update System:
+
+Create a system update_conductor_system that runs at the start of the frame (e.g., in PreUpdate).
+
+Logic: Call conductor.update(time.elapsed_seconds_f64()) using Res<Time<Real>>.
+
 Debug Text System:
 
 Create a system update_time_display that queries Res<Conductor> and updates a Text component on screen showing the current get_time().
 
 Compilation Verification: Ensure the code logic for querying resources compiles correctly.
 
-Step 3: Visual Sync Test (Falling Note)
+Step 3: Visual Sync Test (IIDX-Style Scroll Logic)
 
-Objective: Visualize the "Audio is God" synchronization with resolution-independent coordinates.
+Objective: Visualize the "Audio is God" synchronization using a robust scrolling model compatible with "Green Number" and "SUD+".
+
+Define Scroll Configuration:
+
+Create a Resource struct ScrollConfig.
+
+Fields:
+
+green_number: f32 (Target visibility time in milliseconds, e.g., 300.0).
+
+sud_plus: f32 (Lane cover height in logical pixels, e.g., 250.0).
+
+lift: f32 (Judgment line offset in logical pixels, e.g., 100.0).
+
+lane_height: f32 (Total logical lane height, e.g., 1000.0).
+
+Insert this resource with default values (GN=300, SUD=0, Lift=0).
 
 Spawn a Note:
 
@@ -70,21 +92,25 @@ Component: struct TestNote { target_time: f64 }. Set target_time to 2.0 seconds.
 
 Movement System:
 
-Create a system move_notes(conductor: Res<Conductor>, mut query: Query<(&TestNote, &mut Transform)>).
+Create a system move_notes(conductor: Res<Conductor>, config: Res<ScrollConfig>, mut query: Query<(&TestNote, &mut Transform)>).
 
-Logic (Resolution Independent):
+Logic (Green Number based):
 
-Define a logical vertical workspace (e.g., LOGICAL_HEIGHT = 1080.0).
+visible_height = config.lane_height - config.sud_plus - config.lift
+
+pixels_per_sec = visible_height / (config.green_number / 1000.0)
 
 current_time = conductor.get_time()
 
-Calculate position based on the logical height, not raw pixels, so it scales correctly on 4K.
+time_diff = note.target_time - current_time
 
-y_position = (note.target_time - current_time) * (LOGICAL_HEIGHT * SPEED_FACTOR)
+y_position = config.lift + (time_diff * pixels_per_sec)
+
+Optimization: If y_position > config.lane_height - config.sud_plus, the note is hidden (behind SUD+).
 
 Update transform.translation.y.
 
-Final Check: Ensure src/main.rs compiles without errors. The user will run the application to verify visual smoothness.
+Final Check: Ensure src/main.rs compiles without errors.
 
 Action:
 Please execute Step 1 first. Ensure Bevy compiles. Then proceed to Step 2 and Step 3.
