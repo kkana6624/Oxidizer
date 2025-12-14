@@ -1,24 +1,26 @@
 use std::sync::Arc;
-use atomic_float::AtomicF64;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct Conductor {
-    audio_time_source: Arc<AtomicF64>,
+    audio_sample_source: Arc<AtomicU64>,
+    sample_rate: u32,
     last_audio_time: f64,
     last_update_time: f64,
 }
 
 impl Conductor {
-    pub fn new(audio_time_source: Arc<AtomicF64>) -> Self {
+    pub fn new(audio_sample_source: Arc<AtomicU64>, sample_rate: u32) -> Self {
         Self {
-            audio_time_source,
+            audio_sample_source,
+            sample_rate,
             last_audio_time: 0.0,
             last_update_time: 0.0,
         }
     }
 
     pub fn update(&mut self, current_system_time: f64) {
-        self.last_audio_time = self.audio_time_source.load(Ordering::Acquire);
+        let samples = self.audio_sample_source.load(Ordering::Acquire);
+        self.last_audio_time = samples as f64 / self.sample_rate as f64;
         self.last_update_time = current_system_time;
     }
 
