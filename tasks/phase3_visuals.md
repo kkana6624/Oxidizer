@@ -12,7 +12,7 @@ We are building a high-performance rhythm game interface.
 
 Step 1: Bevy Setup & Window Configuration
 
-Objective: Initialize Bevy with settings optimized for low latency and high refresh rates.
+Objective: Initialize Bevy with settings optimized for low latency and high refresh rates, designed to scale up to 4K resolution.
 
 Update Cargo.toml: Add bevy (latest stable, e.g., 0.13 or 0.14).
 
@@ -28,7 +28,9 @@ Title: "Oxidizer"
 
 PresentMode: PresentMode::Mailbox (Crucial for low latency VSync on Linux/Windows).
 
-Resolution: 1280x720 (for testing).
+Resolution: 1920x1080 (default for windowed testing), but ensure the architecture can handle up to 3840x2160 (4K).
+
+High-DPI Support: Ensure the window respects the OS scale factor.
 
 Run: Verify a blank window opens and runs smoothly.
 
@@ -54,7 +56,7 @@ Verify the numbers count up smoothly when the app runs.
 
 Step 3: Visual Sync Test (Falling Note)
 
-Objective: Visualize the "Audio is God" synchronization.
+Objective: Visualize the "Audio is God" synchronization with resolution-independent coordinates.
 
 Spawn a Note:
 
@@ -66,11 +68,15 @@ Movement System:
 
 Create a system move_notes(conductor: Res<Conductor>, mut query: Query<(&TestNote, &mut Transform)>).
 
-Logic:
+Logic (Resolution Independent):
+
+Define a logical vertical workspace (e.g., LOGICAL_HEIGHT = 1080.0).
 
 current_time = conductor.get_time()
 
-y_position = (note.target_time - current_time) * SPEED_PIXELS_PER_SEC
+Calculate position based on the logical height, not raw pixels, so it scales correctly on 4K.
+
+y_position = (note.target_time - current_time) * (LOGICAL_HEIGHT * SPEED_FACTOR)
 
 Update transform.translation.y.
 
