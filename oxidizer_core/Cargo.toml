@@ -1,0 +1,12 @@
+[package]
+name = "oxidizer_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+crossbeam-channel = "0.5"
+atomic_float = "0.1"
+parking_lot = "0.12"
+glam = "0.27"
