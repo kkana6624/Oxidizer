@@ -23,7 +23,7 @@ pub enum NoteKind {
     Mine,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub tick: u32,
     pub lane: Lane,
@@ -42,7 +42,7 @@ pub enum PatternType {
     Generic,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PatternTag {
     pub start_tick: u32,
     pub end_tick: u32,
@@ -50,7 +50,7 @@ pub struct PatternTag {
     pub intensity: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Header {
     pub title: String,
     pub artist: String,
@@ -59,7 +59,7 @@ pub struct Header {
     pub wav_files: HashMap<u32, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Chart {
     pub header: Header,
     pub notes: Vec<Note>,

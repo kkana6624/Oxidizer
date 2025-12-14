@@ -19,7 +19,7 @@ pub enum Judge {
     Poor,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HitEvent {
     pub note_index: usize,
     pub original_tick: u32,
@@ -28,7 +28,7 @@ pub struct HitEvent {
     pub delta_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayResult {
     pub chart_checksum: String,
     pub random_mode: RandomMode,
