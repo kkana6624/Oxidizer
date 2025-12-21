@@ -16,24 +16,109 @@ pub struct CompileOptions {
 #[error("{code}: {message} (line {line})")]
 pub struct CompileError {
     pub code: &'static str,
+    pub kind: CompileErrorKind,
     pub message: String,
     pub line: usize,
+
+    // --- Structured fields (MVP: optional, message stays source-of-truth) ---
+    pub file: Option<String>,
+    pub column: Option<usize>,
+    pub step_index: Option<usize>,
+    pub lane: Option<u8>,
+    pub time_us: Option<Microseconds>,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileErrorKind {
+    Parse,
+    Semantic,
+    IO,
+    TimeMap,
+    Validation,
+}
+
+impl CompileErrorKind {
+    fn from_code(code: &'static str) -> Self {
+        // Spec: docs/MDFS_DSL-and-Compiler_Spec.md#6.2
+        match code {
+            // Parse
+            "E1001" | "E1002" | "E1003" | "E1004" | "E1005" | "E1006" | "E1101" | "E3201" | "E3202"
+            | "E3203" | "E3204" => Self::Parse,
+
+            // IO
+            "E2001" | "E2002" | "E2003" | "E2004" => Self::IO,
+
+            // Semantic
+            "E2101" | "E4201" => Self::Semantic,
+
+            // TimeMap
+            "E3001" | "E3002" | "E3003" | "E3004" | "E3005" => Self::TimeMap,
+
+            // Validation
+            "E4001" | "E4002" | "E4003" | "E4004" | "E4101" | "E4102" => Self::Validation,
+
+            // MVP default: treat unknown codes as Parse.
+            _ => Self::Parse,
+        }
+    }
 }
 
 impl CompileError {
     fn new(code: &'static str, message: impl Into<String>, line: usize) -> Self {
         Self {
             code,
+            kind: CompileErrorKind::from_code(code),
             message: message.into(),
             line,
+
+            file: None,
+            column: None,
+            step_index: None,
+            lane: None,
+            time_us: None,
+            context: None,
         }
+    }
+
+    pub fn with_file(mut self, file: impl Into<String>) -> Self {
+        self.file = Some(file.into());
+        self
+    }
+
+    pub fn with_column(mut self, column: usize) -> Self {
+        self.column = Some(column);
+        self
+    }
+
+    pub fn with_step_index(mut self, step_index: usize) -> Self {
+        self.step_index = Some(step_index);
+        self
+    }
+
+    pub fn with_lane(mut self, lane: u8) -> Self {
+        self.lane = Some(lane);
+        self
+    }
+
+    pub fn with_time_us(mut self, time_us: Microseconds) -> Self {
+        self.time_us = Some(time_us);
+        self
+    }
+
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
+        self
     }
 }
 
 pub fn compile_file(path: impl AsRef<Path>) -> Result<MdfChart, CompileError> {
     let path = path.as_ref();
     let src = fs::read_to_string(path)
-        .map_err(|e| CompileError::new("E0001", format!("failed to read .mdfs: {e}"), 0))?;
+           .map_err(|e| {
+               CompileError::new("E2001", format!("failed to read input .mdfs: {e}"), 0)
+                   .with_file(path.display().to_string())
+           })?;
     let base_dir = path.parent().map(|p| p.to_path_buf());
     compile_str_with_options(&src, CompileOptions { base_dir })
 }
@@ -84,6 +169,7 @@ struct ParsedMeta {
     version: Option<String>,
     tags: Vec<String>,
     sound_manifest: Option<String>,
+    sound_manifest_line: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,11 +241,11 @@ fn parse_mdfs(src: &str) -> Result<ParsedMdfs, CompileError> {
                 continue;
             }
 
-            return Err(CompileError::new(
-                "E0002",
-                "unexpected content before track: |",
-                line_no,
-            ));
+                return Err(CompileError::new(
+                    "E1101",
+                    "unexpected content before track: |",
+                    line_no,
+                ));
         }
 
         // track body
@@ -175,7 +261,7 @@ fn parse_mdfs(src: &str) -> Result<ParsedMdfs, CompileError> {
                 "title" | "artist" | "version" | "tags" | "sound_manifest"
             ) {
                 return Err(CompileError::new(
-                    "E3205",
+                        "E1006",
                     format!("metadata directive not allowed inside track body: @{directive_name}"),
                     line_no,
                 ));
@@ -189,7 +275,7 @@ fn parse_mdfs(src: &str) -> Result<ParsedMdfs, CompileError> {
             }
 
             return Err(CompileError::new(
-                "E0003",
+                    "E1006",
                 format!("unknown directive: {trimmed}"),
                 line_no,
             ));
@@ -200,7 +286,7 @@ fn parse_mdfs(src: &str) -> Result<ParsedMdfs, CompileError> {
     }
 
     if !in_track {
-        return Err(CompileError::new("E0004", "missing track: |", 0));
+        return Err(CompileError::new("E1101", "missing track: |", 0));
     }
 
     Ok(ParsedMdfs {
@@ -229,10 +315,11 @@ fn parse_header_directive(meta: &mut ParsedMeta, trimmed: &str, line_no: usize) 
                 return Err(CompileError::new("E2001", "missing manifest path", line_no));
             }
             meta.sound_manifest = Some(rest.to_string());
+            meta.sound_manifest_line = Some(line_no);
         }
         _ => {
             return Err(CompileError::new(
-                "E0005",
+                "E1006",
                 format!("unknown header directive: @{name}"),
                 line_no,
             ));
@@ -272,7 +359,14 @@ fn parse_step_line(trimmed: &str, line_no: usize) -> Result<TrackLine, CompileEr
     for idx in 0..8 {
         cells[idx] = chars
             .next()
-            .ok_or_else(|| CompileError::new("E4002", "step line must have 8 chars", line_no))?;
+            .ok_or_else(|| {
+                CompileError::new(
+                    "E1101",
+                    format!("step line must have 8 chars (context={trimmed})"),
+                    line_no,
+                )
+                .with_context(trimmed.to_string())
+            })?;
     }
 
     for (idx, &ch) in cells.iter().enumerate() {
@@ -280,28 +374,46 @@ fn parse_step_line(trimmed: &str, line_no: usize) -> Result<TrackLine, CompileEr
         if !ok {
             return Err(CompileError::new(
                 "E4001",
-                format!("undefined step char '{ch}' at col {idx}"),
+                format!("undefined step char (lane={idx}, char='{ch}', context={trimmed})"),
                 line_no,
-            ));
+            )
+            .with_lane(idx as u8)
+            .with_context(trimmed.to_string()));
         }
-        if idx != 0 && matches!(ch, 'b' | 'm' | 'B' | 'M' | '!') {
+
+        if idx != 0 && matches!(ch, 'S' | 'b' | 'm' | 'B' | 'M') {
             return Err(CompileError::new(
-                "E4001",
-                format!("char '{ch}' is only allowed on scratch lane (col 0)"),
+                "E4002",
+                format!("scratch-only char used on non-scratch lane (lane={idx}, char='{ch}', context={trimmed})"),
                 line_no,
-            ));
+            )
+            .with_lane(idx as u8)
+            .with_context(trimmed.to_string()));
         }
+
+        if idx != 0 && ch == '!' {
+            return Err(CompileError::new(
+                "E4003",
+                format!("'!' is only allowed on scratch lane (lane=0) (lane={idx}, context={trimmed})"),
+                line_no,
+            )
+            .with_lane(idx as u8)
+            .with_context(trimmed.to_string()));
+        }
+
         if idx == 0 && matches!(ch, 'l' | 'h') {
             return Err(CompileError::new(
                 "E4001",
-                format!("char '{ch}' is not allowed on scratch lane (col 0)"),
+                format!("char not allowed on scratch lane (lane=0, char='{ch}', context={trimmed})"),
                 line_no,
-            ));
+            )
+            .with_lane(0)
+            .with_context(trimmed.to_string()));
         }
     }
 
     let tail = chars.as_str().trim();
-    let (sound, rev) = parse_step_tail(tail, line_no)?;
+    let (sound, rev) = parse_step_tail(tail, trimmed, line_no)?;
 
     Ok(TrackLine::Step {
         line: line_no,
@@ -311,7 +423,7 @@ fn parse_step_line(trimmed: &str, line_no: usize) -> Result<TrackLine, CompileEr
     })
 }
 
-fn parse_step_tail(tail: &str, line_no: usize) -> Result<(SoundSpec, RevSpec), CompileError> {
+fn parse_step_tail(tail: &str, context_line: &str, line_no: usize) -> Result<(SoundSpec, RevSpec), CompileError> {
     if tail.is_empty() {
         return Ok((SoundSpec::None, RevSpec::default()));
     }
@@ -324,12 +436,12 @@ fn parse_step_tail(tail: &str, line_no: usize) -> Result<(SoundSpec, RevSpec), C
         let after = rest[(colon_idx + 1)..].trim();
         // split sound and rev directives (if any)
         let (sound_part, rev_part) = split_sound_and_rev(after);
-        sound = parse_sound_spec(sound_part.trim(), line_no)?;
+        sound = parse_sound_spec(sound_part.trim(), context_line, line_no)?;
         rest = rev_part.trim();
     }
 
     if !rest.is_empty() {
-        rev = parse_rev_spec(rest, line_no)?;
+        rev = parse_rev_spec(rest, context_line, line_no)?;
     }
 
     Ok((sound, rev))
@@ -351,7 +463,7 @@ fn split_sound_and_rev(after_colon: &str) -> (&str, &str) {
     }
 }
 
-fn parse_rev_spec(s: &str, line_no: usize) -> Result<RevSpec, CompileError> {
+fn parse_rev_spec(s: &str, context_line: &str, line_no: usize) -> Result<RevSpec, CompileError> {
     let mut spec = RevSpec::default();
     let mut rest = s.trim();
 
@@ -361,9 +473,21 @@ fn parse_rev_spec(s: &str, line_no: usize) -> Result<RevSpec, CompileError> {
             let (tok, next) = split_first_token(rest);
             let n: usize = tok
                 .parse()
-                .map_err(|_| CompileError::new("E1005", "invalid @rev_every", line_no))?;
+                .map_err(|_| {
+                    CompileError::new(
+                        "E1005",
+                        format!("invalid @rev_every (context={context_line})"),
+                        line_no,
+                    )
+                    .with_context(context_line.to_string())
+                })?;
             if n < 1 {
-                return Err(CompileError::new("E1005", "@rev_every must be >= 1", line_no));
+                return Err(CompileError::new(
+                    "E1005",
+                    format!("@rev_every must be >= 1 (context={context_line})"),
+                    line_no,
+                )
+                .with_context(context_line.to_string()));
             }
             spec.every = Some(n);
             rest = next.trim_start();
@@ -375,23 +499,41 @@ fn parse_rev_spec(s: &str, line_no: usize) -> Result<RevSpec, CompileError> {
             let (tok, next) = split_first_token(rest);
             let list = tok.trim();
             if list.is_empty() {
-                return Err(CompileError::new("E1004", "empty @rev_at list", line_no));
+                return Err(CompileError::new(
+                    "E1004",
+                    format!("empty @rev_at list (context={context_line})"),
+                    line_no,
+                )
+                .with_context(context_line.to_string()));
             }
             let mut values = Vec::new();
             for part in list.split(',') {
                 let p = part.trim();
                 if p.is_empty() {
-                    return Err(CompileError::new("E1004", "invalid @rev_at list", line_no));
+                    return Err(CompileError::new(
+                        "E1004",
+                        format!("invalid @rev_at list (context={context_line})"),
+                        line_no,
+                    )
+                    .with_context(context_line.to_string()));
                 }
                 let v: usize = p
                     .parse()
-                    .map_err(|_| CompileError::new("E1004", "invalid @rev_at list", line_no))?;
+                    .map_err(|_| {
+                        CompileError::new(
+                            "E1004",
+                            format!("invalid @rev_at list (context={context_line})"),
+                            line_no,
+                        )
+                        .with_context(context_line.to_string())
+                    })?;
                 if v < 2 {
                     return Err(CompileError::new(
                         "E1004",
-                        "@rev_at values must be >= 2",
+                        format!("@rev_at values must be >= 2 (context={context_line})"),
                         line_no,
-                    ));
+                    )
+                    .with_context(context_line.to_string()));
                 }
                 values.push(v);
             }
@@ -401,10 +543,11 @@ fn parse_rev_spec(s: &str, line_no: usize) -> Result<RevSpec, CompileError> {
         }
 
         return Err(CompileError::new(
-            "E0006",
-            format!("unexpected trailing tokens: {rest}"),
+            "E1006",
+            format!("unexpected trailing tokens: {rest} (context={context_line})"),
             line_no,
-        ));
+        )
+        .with_context(context_line.to_string()));
     }
 
     Ok(spec)
@@ -418,7 +561,7 @@ fn split_first_token(s: &str) -> (&str, &str) {
     }
 }
 
-fn parse_sound_spec(s: &str, line_no: usize) -> Result<SoundSpec, CompileError> {
+fn parse_sound_spec(s: &str, context_line: &str, line_no: usize) -> Result<SoundSpec, CompileError> {
     let s = s.trim();
     if s.is_empty() {
         return Ok(SoundSpec::None);
@@ -430,21 +573,33 @@ fn parse_sound_spec(s: &str, line_no: usize) -> Result<SoundSpec, CompileError> 
 
     if s.starts_with('[') {
         if !s.ends_with(']') {
-            return Err(CompileError::new("E1001", "invalid SOUND_SPEC array", line_no));
+            return Err(CompileError::new(
+                "E1001",
+                format!("invalid SOUND_SPEC array (context={context_line})"),
+                line_no,
+            )
+            .with_context(context_line.to_string()));
         }
         let inner = &s[1..s.len() - 1];
         let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
         if parts.len() != 8 {
             return Err(CompileError::new(
                 "E1002",
-                "SOUND_SPEC lane array must have 8 slots",
+                format!("SOUND_SPEC lane array must have 8 slots (context={context_line})"),
                 line_no,
-            ));
+            )
+            .with_context(context_line.to_string()));
         }
         let mut lanes: [Option<String>; 8] = std::array::from_fn(|_| None);
         for (i, p) in parts.iter().enumerate() {
             if p.is_empty() {
-                return Err(CompileError::new("E1003", "invalid SOUND_SPEC slot", line_no));
+                return Err(CompileError::new(
+                    "E1003",
+                    format!("invalid SOUND_SPEC slot (lane={i}, context={context_line})"),
+                    line_no,
+                )
+                .with_lane(i as u8)
+                .with_context(context_line.to_string()));
             }
             if *p == "-" {
                 lanes[i] = None;
@@ -456,7 +611,12 @@ fn parse_sound_spec(s: &str, line_no: usize) -> Result<SoundSpec, CompileError> 
     }
 
     if s.contains(char::is_whitespace) {
-        return Err(CompileError::new("E1001", "invalid SOUND_SPEC token", line_no));
+        return Err(CompileError::new(
+            "E1001",
+            format!("invalid SOUND_SPEC token (context={context_line})"),
+            line_no,
+        )
+        .with_context(context_line.to_string()));
     }
     Ok(SoundSpec::Single(s.to_string()))
 }
@@ -470,7 +630,11 @@ fn parse_tags_csv(s: &str, line_no: usize) -> Result<Vec<String>, CompileError> 
     for part in s.split(',') {
         let t = part.trim();
         if t.is_empty() {
-            return Err(CompileError::new("E3204", "invalid @tags csv", line_no));
+            return Err(CompileError::new(
+                "E3204",
+                format!("invalid @tags csv (context=@tags {s})"),
+                line_no,
+            ));
         }
         tags.push(t.to_string());
     }
@@ -481,7 +645,7 @@ fn split_directive(trimmed: &str, line_no: usize) -> Result<(&str, &str), Compil
     let mut iter = trimmed.splitn(2, char::is_whitespace);
     let head = iter.next().unwrap_or("");
     if !head.starts_with('@') {
-        return Err(CompileError::new("E0007", "expected directive", line_no));
+        return Err(CompileError::new("E1006", "expected directive", line_no));
     }
     let name = head.trim_start_matches('@');
     let rest = iter.next().unwrap_or("").trim();
@@ -500,11 +664,13 @@ fn load_resources(parsed: &ParsedMdfs, options: &CompileOptions) -> Result<HashM
         return Ok(HashMap::new());
     };
 
+    let manifest_line = parsed.meta.sound_manifest_line.unwrap_or(parsed.meta_line);
+
     let Some(base_dir) = &options.base_dir else {
         return Err(CompileError::new(
             "E2001",
             "@sound_manifest requires compile_file() or CompileOptions.base_dir",
-            parsed.meta_line,
+            manifest_line,
         ));
     };
 
@@ -513,12 +679,12 @@ fn load_resources(parsed: &ParsedMdfs, options: &CompileOptions) -> Result<HashM
         CompileError::new(
             "E2001",
             format!("failed to read manifest {}: {e}", full.display()),
-            parsed.meta_line,
+            manifest_line,
         )
     })?;
 
     let map: HashMap<String, serde_json::Value> = serde_json::from_slice(&bytes)
-        .map_err(|e| CompileError::new("E2002", format!("invalid manifest json: {e}"), parsed.meta_line))?;
+        .map_err(|e| CompileError::new("E2002", format!("invalid manifest json: {e}"), manifest_line))?;
 
     let mut out = HashMap::new();
     for (k, v) in map {
@@ -526,14 +692,14 @@ fn load_resources(parsed: &ParsedMdfs, options: &CompileOptions) -> Result<HashM
             return Err(CompileError::new(
                 "E2003",
                 "manifest values must be strings",
-                parsed.meta_line,
+                manifest_line,
             ));
         };
         if k.trim().is_empty() || s.trim().is_empty() {
             return Err(CompileError::new(
                 "E2003",
                 "manifest keys/values must be non-empty",
-                parsed.meta_line,
+                manifest_line,
             ));
         }
         out.insert(k, s.to_string());
@@ -578,7 +744,15 @@ fn step_duration_us(bpm: f64, div: u32, line: usize) -> Result<Microseconds, Com
     }
     let step_duration_sec = (60.0 / bpm) * (4.0 / div as f64);
     let us_f64 = step_duration_sec * 1_000_000.0;
-    Ok((us_f64 + 0.5).floor() as Microseconds)
+    let us = (us_f64 + 0.5).floor() as Microseconds;
+    if us == 0 {
+        return Err(CompileError::new(
+            "E3005",
+            "step duration rounded to 0us; bpm/div too extreme",
+            line,
+        ));
+    }
+    Ok(us)
 }
 
 #[derive(Debug, Clone)]
@@ -593,6 +767,7 @@ enum OpenHoldKind {
 
 #[derive(Debug, Clone)]
 struct OpenHold {
+    start_line: usize,
     start_time_us: Microseconds,
     start_step_index: usize,
     sound_id: Option<String>,
@@ -607,6 +782,13 @@ fn pass2_generate(
 ) -> Result<(Vec<Note>, Vec<BgmEvent>), CompileError> {
     let mut notes = Vec::new();
     let mut bgm_events = Vec::new();
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum StartKind {
+        Tap,
+        HoldStart,
+    }
+    let mut start_kinds: HashMap<(Microseconds, u8), StartKind> = HashMap::new();
 
     let mut open: Vec<Option<OpenHold>> = vec![None; 8];
     let mut step_index = 0usize;
@@ -623,14 +805,14 @@ fn pass2_generate(
                 let time_us = step_times
                     .get(step_index)
                     .copied()
-                    .ok_or_else(|| CompileError::new("E0008", "internal step index mismatch", *line))?;
+                    .ok_or_else(|| CompileError::new("E1101", "internal step index mismatch", *line))?;
 
                 let lane_sounds = lane_sounds(sound);
                 let has_any_note = cells.iter().any(|c| !matches!(c, '.'));
 
                 // If step has only '.' but has SOUND_SPEC, generate BGM events (optional feature in spec)
                 if !has_any_note {
-                    push_bgm_events_from_sound(&mut bgm_events, time_us, sound);
+                    push_bgm_events_from_sound(&mut bgm_events, time_us, sound, resources, *line)?;
                 }
 
                 // Validate @rev directives appear only on MSS/HMSS start lines.
@@ -639,7 +821,9 @@ fn pass2_generate(
                         "E4201",
                         "@rev_every/@rev_at only allowed on MSS/HMSS start line",
                         *line,
-                    ));
+                    )
+                    .with_step_index(step_index)
+                    .with_time_us(time_us));
                 }
 
                 for col in 0..8 {
@@ -647,6 +831,28 @@ fn pass2_generate(
                     match ch {
                         '.' => {}
                         'N' | 'S' => {
+                            if let Some(id) = lane_sounds[col].as_deref() {
+                                validate_sound_id(resources, id, *line, Some(col))?;
+                            }
+
+                            let lane_u8 = col as u8;
+                            if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+                                if *existing == StartKind::HoldStart {
+                                    return Err(CompileError::new(
+                                        "E4004",
+                                        format!(
+                                            "tap overlaps hold start at same (time_us,lane) (time_us={time_us}, lane={col})"
+                                        ),
+                                        *line,
+                                    )
+                                    .with_step_index(step_index)
+                                    .with_time_us(time_us)
+                                    .with_lane(lane_u8));
+                                }
+                            } else {
+                                start_kinds.insert((time_us, lane_u8), StartKind::Tap);
+                            }
+
                             notes.push(Note {
                                 time_us,
                                 col: col as u8,
@@ -654,72 +860,216 @@ fn pass2_generate(
                                 sound_id: lane_sounds[col].clone(),
                             });
                         }
-                        'l' => toggle_hold(
-                            &mut notes,
-                            &mut open,
-                            col,
-                            time_us,
-                            step_index,
-                            lane_sounds[col].clone(),
-                            OpenHoldKind::Charge,
-                            *line,
-                        )?,
-                        'h' => toggle_hold(
-                            &mut notes,
-                            &mut open,
-                            col,
-                            time_us,
-                            step_index,
-                            lane_sounds[col].clone(),
-                            OpenHoldKind::HellCharge,
-                            *line,
-                        )?,
-                        'b' => toggle_scratch_hold_end_se(
-                            &mut notes,
-                            &mut bgm_events,
-                            &mut open,
-                            time_us,
-                            step_index,
-                            sound,
-                            lane_sounds[0].clone(),
-                            OpenHoldKind::Bss,
-                            *line,
-                        )?,
-                        'B' => toggle_scratch_hold_end_se(
-                            &mut notes,
-                            &mut bgm_events,
-                            &mut open,
-                            time_us,
-                            step_index,
-                            sound,
-                            lane_sounds[0].clone(),
-                            OpenHoldKind::HellBss,
-                            *line,
-                        )?,
-                        'm' => toggle_mss(
-                            &mut notes,
-                            &mut bgm_events,
-                            &mut open,
-                            time_us,
-                            step_index,
-                            sound,
-                            lane_sounds[0].clone(),
-                            OpenHoldKind::Mss { rev: rev.clone() },
-                            step_times,
-                            *line,
-                        )?,
-                        'M' => toggle_mss(
-                            &mut notes,
-                            &mut bgm_events,
-                            &mut open,
-                            time_us,
-                            step_index,
-                            sound,
-                            lane_sounds[0].clone(),
-                            OpenHoldKind::HellMss { rev: rev.clone() },
-                            step_times,
-                            *line,
-                        )?,
+                        'l' => {
+                            let is_start = open[col].is_none();
+                            if is_start {
+                                let lane_u8 = col as u8;
+                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+                                    if *existing == StartKind::Tap {
+                                        return Err(CompileError::new(
+                                            "E4004",
+                                            format!(
+                                                "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane={col})"
+                                            ),
+                                            *line,
+                                        )
+                                        .with_step_index(step_index)
+                                        .with_time_us(time_us)
+                                        .with_lane(lane_u8));
+                                    }
+                                } else {
+                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
+                                }
+                            }
+
+                            toggle_hold(
+                                &mut notes,
+                                &mut open,
+                                resources,
+                                col,
+                                time_us,
+                                step_index,
+                                lane_sounds[col].clone(),
+                                OpenHoldKind::Charge,
+                                *line,
+                            )?
+                        }
+                        'h' => {
+                            let is_start = open[col].is_none();
+                            if is_start {
+                                let lane_u8 = col as u8;
+                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+                                    if *existing == StartKind::Tap {
+                                        return Err(CompileError::new(
+                                            "E4004",
+                                            format!(
+                                                "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane={col})"
+                                            ),
+                                            *line,
+                                        )
+                                        .with_step_index(step_index)
+                                        .with_time_us(time_us)
+                                        .with_lane(lane_u8));
+                                    }
+                                } else {
+                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
+                                }
+                            }
+
+                            toggle_hold(
+                                &mut notes,
+                                &mut open,
+                                resources,
+                                col,
+                                time_us,
+                                step_index,
+                                lane_sounds[col].clone(),
+                                OpenHoldKind::HellCharge,
+                                *line,
+                            )?
+                        }
+                        'b' => {
+                            let is_start = open[0].is_none();
+                            if is_start {
+                                let lane_u8 = 0u8;
+                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+                                    if *existing == StartKind::Tap {
+                                        return Err(CompileError::new(
+                                            "E4004",
+                                            format!(
+                                                "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane=0)"
+                                            ),
+                                            *line,
+                                        )
+                                        .with_step_index(step_index)
+                                        .with_time_us(time_us)
+                                        .with_lane(0));
+                                    }
+                                } else {
+                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
+                                }
+                            }
+
+                            toggle_scratch_hold_end_se(
+                                &mut notes,
+                                &mut bgm_events,
+                                &mut open,
+                                resources,
+                                time_us,
+                                step_index,
+                                sound,
+                                lane_sounds[0].clone(),
+                                OpenHoldKind::Bss,
+                                *line,
+                            )?
+                        }
+                        'B' => {
+                            let is_start = open[0].is_none();
+                            if is_start {
+                                let lane_u8 = 0u8;
+                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+                                    if *existing == StartKind::Tap {
+                                        return Err(CompileError::new(
+                                            "E4004",
+                                            format!(
+                                                "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane=0)"
+                                            ),
+                                            *line,
+                                        )
+                                        .with_step_index(step_index)
+                                        .with_time_us(time_us)
+                                        .with_lane(0));
+                                    }
+                                } else {
+                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
+                                }
+                            }
+
+                            toggle_scratch_hold_end_se(
+                                &mut notes,
+                                &mut bgm_events,
+                                &mut open,
+                                resources,
+                                time_us,
+                                step_index,
+                                sound,
+                                lane_sounds[0].clone(),
+                                OpenHoldKind::HellBss,
+                                *line,
+                            )?
+                        }
+                        'm' => {
+                            let is_start = open[0].is_none();
+                            if is_start {
+                                let lane_u8 = 0u8;
+                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+                                    if *existing == StartKind::Tap {
+                                        return Err(CompileError::new(
+                                            "E4004",
+                                            format!(
+                                                "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane=0)"
+                                            ),
+                                            *line,
+                                        )
+                                        .with_step_index(step_index)
+                                        .with_time_us(time_us)
+                                        .with_lane(0));
+                                    }
+                                } else {
+                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
+                                }
+                            }
+
+                            toggle_mss(
+                                &mut notes,
+                                &mut bgm_events,
+                                &mut open,
+                                resources,
+                                time_us,
+                                step_index,
+                                sound,
+                                lane_sounds[0].clone(),
+                                OpenHoldKind::Mss { rev: rev.clone() },
+                                step_times,
+                                *line,
+                            )?
+                        }
+                        'M' => {
+                            let is_start = open[0].is_none();
+                            if is_start {
+                                let lane_u8 = 0u8;
+                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+                                    if *existing == StartKind::Tap {
+                                        return Err(CompileError::new(
+                                            "E4004",
+                                            format!(
+                                                "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane=0)"
+                                            ),
+                                            *line,
+                                        )
+                                        .with_step_index(step_index)
+                                        .with_time_us(time_us)
+                                        .with_lane(0));
+                                    }
+                                } else {
+                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
+                                }
+                            }
+
+                            toggle_mss(
+                                &mut notes,
+                                &mut bgm_events,
+                                &mut open,
+                                resources,
+                                time_us,
+                                step_index,
+                                sound,
+                                lane_sounds[0].clone(),
+                                OpenHoldKind::HellMss { rev: rev.clone() },
+                                step_times,
+                                *line,
+                            )?
+                        }
                         '!' => {
                             // marker checkpoint only valid inside MSS/HMSS hold
                             let Some(open0) = &mut open[0] else {
@@ -727,25 +1077,42 @@ fn pass2_generate(
                                     "E4003",
                                     "'!' is only valid while MSS/HMSS is active",
                                     *line,
-                                ));
+                                )
+                                .with_step_index(step_index)
+                                .with_time_us(time_us)
+                                .with_lane(0));
                             };
 
                             match open0.kind {
                                 OpenHoldKind::Mss { .. } | OpenHoldKind::HellMss { .. } => {
                                     open0.marker_checkpoints_us.push(time_us);
-                                    push_bgm_events_from_sound(&mut bgm_events, time_us, sound);
+                                    push_bgm_events_from_sound(&mut bgm_events, time_us, sound, resources, *line)?;
+                                }
+                                OpenHoldKind::Bss | OpenHoldKind::HellBss => {
+                                    return Err(CompileError::new(
+                                        "E4102",
+                                        "'!' is not allowed while BSS/HBSS is active",
+                                        *line,
+                                    )
+                                    .with_step_index(step_index)
+                                    .with_time_us(time_us)
+                                    .with_lane(0));
                                 }
                                 _ => {
                                     return Err(CompileError::new(
                                         "E4003",
                                         "'!' is only valid while MSS/HMSS is active",
                                         *line,
-                                    ));
+                                    )
+                                    .with_step_index(step_index)
+                                    .with_time_us(time_us)
+                                    .with_lane(0));
                                 }
                             }
                         }
                         _ => unreachable!(),
                     }
+
                 }
 
                 step_index += 1;
@@ -755,17 +1122,21 @@ fn pass2_generate(
 
     // ensure all holds closed
     for (col, v) in open.iter().enumerate() {
-        if v.is_some() {
+        if let Some(h) = v {
             return Err(CompileError::new(
-                "E4100",
-                format!("unclosed hold at col {col}"),
-                0,
-            ));
+                "E4101",
+                format!(
+                    "unclosed toggle (lane={col}, start_line={}, start_time_us={})",
+                    h.start_line,
+                    h.start_time_us
+                ),
+                h.start_line,
+            )
+            .with_lane(col as u8)
+            .with_step_index(h.start_step_index)
+            .with_time_us(h.start_time_us));
         }
     }
-
-    // validate sound IDs against manifest
-    validate_sound_ids(resources, &notes, &bgm_events)?;
 
     Ok((notes, bgm_events))
 }
@@ -778,20 +1149,79 @@ fn lane_sounds(sound: &SoundSpec) -> [Option<String>; 8] {
     }
 }
 
-fn push_bgm_events_from_sound(out: &mut Vec<BgmEvent>, time_us: Microseconds, sound: &SoundSpec) {
+fn validate_sound_id(
+    resources: &HashMap<String, String>,
+    sound_id: &str,
+    line: usize,
+    lane: Option<usize>,
+) -> Result<(), CompileError> {
+    let lane_u8 = lane.and_then(|v| u8::try_from(v).ok());
+    if resources.is_empty() {
+        let mut err = CompileError::new(
+            "E2101",
+            match lane {
+                Some(lane) => {
+                    format!(
+                        "sound_id referenced but no manifest loaded (sound_id={sound_id}, lane={lane})"
+                    )
+                }
+                None => format!(
+                    "sound_id referenced but no manifest loaded (sound_id={sound_id})"
+                ),
+            },
+            line,
+        );
+        if let Some(lane_u8) = lane_u8 {
+            err = err.with_lane(lane_u8);
+        }
+        return Err(err);
+    }
+    if !resources.contains_key(sound_id) {
+        let mut err = CompileError::new(
+            "E2101",
+            match lane {
+                Some(lane) => {
+                    format!("sound_id not found in manifest (sound_id={sound_id}, lane={lane})")
+                }
+                None => format!("sound_id not found in manifest (sound_id={sound_id})"),
+            },
+            line,
+        );
+        if let Some(lane_u8) = lane_u8 {
+            err = err.with_lane(lane_u8);
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn push_bgm_events_from_sound(
+    out: &mut Vec<BgmEvent>,
+    time_us: Microseconds,
+    sound: &SoundSpec,
+    resources: &HashMap<String, String>,
+    line: usize,
+) -> Result<(), CompileError> {
     match sound {
-        SoundSpec::None => {}
-        SoundSpec::Single(id) => out.push(BgmEvent {
-            time_us,
-            sound_id: id.clone(),
-        }),
+        SoundSpec::None => Ok(()),
+        SoundSpec::Single(id) => {
+            validate_sound_id(resources, id, line, None)?;
+            out.push(BgmEvent {
+                time_us,
+                sound_id: id.clone(),
+            });
+            Ok(())
+        }
         SoundSpec::PerLane(lanes) => {
-            for id in lanes.iter().flatten() {
+            for (lane, id) in lanes.iter().enumerate() {
+                let Some(id) = id else { continue };
+                validate_sound_id(resources, id, line, Some(lane))?;
                 out.push(BgmEvent {
                     time_us,
                     sound_id: id.clone(),
                 });
             }
+            Ok(())
         }
     }
 }
@@ -799,6 +1229,7 @@ fn push_bgm_events_from_sound(out: &mut Vec<BgmEvent>, time_us: Microseconds, so
 fn toggle_hold(
     notes: &mut Vec<Note>,
     open: &mut [Option<OpenHold>],
+    resources: &HashMap<String, String>,
     col: usize,
     time_us: Microseconds,
     step_index: usize,
@@ -812,7 +1243,11 @@ fn toggle_hold(
 
     match &open[col] {
         None => {
+            if let Some(id) = sound_id.as_deref() {
+                validate_sound_id(resources, id, line, Some(col))?;
+            }
             open[col] = Some(OpenHold {
+                start_line: line,
                 start_time_us: time_us,
                 start_step_index: step_index,
                 sound_id,
@@ -861,6 +1296,7 @@ fn toggle_scratch_hold_end_se(
     notes: &mut Vec<Note>,
     bgm_events: &mut Vec<BgmEvent>,
     open: &mut [Option<OpenHold>],
+    resources: &HashMap<String, String>,
     time_us: Microseconds,
     step_index: usize,
     end_sound: &SoundSpec,
@@ -869,7 +1305,11 @@ fn toggle_scratch_hold_end_se(
     line: usize,
 ) -> Result<(), CompileError> {
     if open[0].is_none() {
+        if let Some(id) = start_sound_id.as_deref() {
+            validate_sound_id(resources, id, line, Some(0))?;
+        }
         open[0] = Some(OpenHold {
+            start_line: line,
             start_time_us: time_us,
             start_step_index: step_index,
             sound_id: start_sound_id,
@@ -897,7 +1337,7 @@ fn toggle_scratch_hold_end_se(
     }
 
     // end line SOUND_SPEC -> BgmEvent(s)
-    push_bgm_events_from_sound(bgm_events, time_us, end_sound);
+    push_bgm_events_from_sound(bgm_events, time_us, end_sound, resources, line)?;
 
     let note_kind = match existing_kind {
         OpenHoldKind::Bss => NoteKind::BackSpinScratch {
@@ -922,6 +1362,7 @@ fn toggle_mss(
     notes: &mut Vec<Note>,
     bgm_events: &mut Vec<BgmEvent>,
     open: &mut [Option<OpenHold>],
+    resources: &HashMap<String, String>,
     time_us: Microseconds,
     step_index: usize,
     end_sound: &SoundSpec,
@@ -932,7 +1373,11 @@ fn toggle_mss(
 ) -> Result<(), CompileError> {
     if open[0].is_none() {
         // start
+        if let Some(id) = start_sound_id.as_deref() {
+            validate_sound_id(resources, id, line, Some(0))?;
+        }
         open[0] = Some(OpenHold {
+            start_line: line,
             start_time_us: time_us,
             start_step_index: step_index,
             sound_id: start_sound_id,
@@ -974,7 +1419,7 @@ fn toggle_mss(
     }
 
     // end line SOUND_SPEC -> BgmEvent(s)
-    push_bgm_events_from_sound(bgm_events, time_us, end_sound);
+    push_bgm_events_from_sound(bgm_events, time_us, end_sound, resources, line)?;
 
     let checkpoints = compute_mss_checkpoints(start_step, step_index, time_us, step_times, &rev, &marker_us, line)?;
     let note_kind = if is_hell {
@@ -1009,7 +1454,7 @@ fn compute_mss_checkpoints(
     line: usize,
 ) -> Result<Vec<Microseconds>, CompileError> {
     if end_step <= start_step {
-        return Err(CompileError::new("E0009", "invalid MSS range", line));
+        return Err(CompileError::new("E4101", "invalid MSS toggle range", line));
     }
 
     let mut set = HashSet::<Microseconds>::new();
@@ -1048,44 +1493,6 @@ fn compute_mss_checkpoints(
     Ok(v)
 }
 
-fn validate_sound_ids(
-    resources: &HashMap<String, String>,
-    notes: &[Note],
-    bgm_events: &[BgmEvent],
-) -> Result<(), CompileError> {
-    let mut used = HashSet::<String>::new();
-    for n in notes {
-        if let Some(id) = &n.sound_id {
-            used.insert(id.clone());
-        }
-    }
-    for e in bgm_events {
-        used.insert(e.sound_id.clone());
-    }
-
-    if used.is_empty() {
-        return Ok(());
-    }
-
-    if resources.is_empty() {
-        return Err(CompileError::new(
-            "E2101",
-            "sound_id referenced but no resources manifest loaded",
-            0,
-        ));
-    }
-
-    for id in used {
-        if !resources.contains_key(&id) {
-            return Err(CompileError::new(
-                "E2101",
-                format!("sound_id not found in manifest: {id}"),
-                0,
-            ));
-        }
-    }
-    Ok(())
-}
 
 fn compute_total_duration_us(notes: &[Note], bgm_events: &[BgmEvent]) -> Microseconds {
     let mut max_us: Microseconds = 0;
@@ -1108,123 +1515,4 @@ fn compute_total_duration_us(notes: &[Note], bgm_events: &[BgmEvent]) -> Microse
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    #[test]
-    fn compile_minimal_tap_without_manifest_if_no_sound_ids() {
-        let src = r#"
-@title T
-@artist A
-@version 2.2
-track: |
-  @bpm 120
-  @div 4
-  ........
-  ..N.....
-"#;
-
-        let chart = compile_str(src).unwrap();
-        assert_eq!(chart.meta.title, "T");
-        assert_eq!(chart.notes.len(), 1);
-        assert_eq!(chart.notes[0].col, 2);
-        assert_eq!(chart.notes[0].sound_id, None);
-        assert!(chart.meta.total_duration_us > 0);
-    }
-
-    #[test]
-    fn mss_generates_reverse_checkpoints_from_markers_and_rev_at() {
-        let src = r#"
-@title T
-@artist A
-@version 2.2
-track: |
-  @bpm 120
-  @div 4
-  m....... : [] @rev_at 2,3
-  !.......
-  ........
-  m.......
-"#;
-
-        let chart = compile_str(src).unwrap();
-        assert_eq!(chart.notes.len(), 1);
-        let n = &chart.notes[0];
-        match &n.kind {
-            NoteKind::MultiSpinScratch {
-                end_time_us,
-                reverse_checkpoints_us,
-            } => {
-                assert!(*end_time_us > n.time_us);
-                // should include at least one checkpoint
-                assert!(!reverse_checkpoints_us.is_empty());
-            }
-            _ => panic!("unexpected kind"),
-        }
-    }
-
-    #[test]
-    fn compile_with_manifest_loads_resources_and_validates_sound_ids() {
-        let tmp_base = std::env::temp_dir().join(format!(
-            "oxidizer_mdfs_compiler_test_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&tmp_base).unwrap();
-        let manifest_path = tmp_base.join("sounds.json");
-        fs::write(
-            &manifest_path,
-                        r#"{
-    "K01": "kick.wav",
-    "SE_END": "end.wav"
-}"#,
-        )
-        .unwrap();
-
-        let src = r#"
-@title T
-@artist A
-@version 2.2
-@sound_manifest sounds.json
-track: |
-  @bpm 120
-  @div 4
-  ..N..... : K01
-  ........ : SE_END
-"#;
-
-        let chart = compile_str_with_options(
-            src,
-            CompileOptions {
-                base_dir: Some(tmp_base.clone()),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(chart.resources.get("K01").unwrap(), "kick.wav");
-        assert_eq!(chart.notes.len(), 1);
-        assert_eq!(chart.notes[0].sound_id.as_deref(), Some("K01"));
-        assert_eq!(chart.bgm_events.len(), 1);
-        assert_eq!(chart.bgm_events[0].sound_id, "SE_END");
-    }
-
-    #[test]
-    fn repo_example_compiles() {
-        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let example = crate_dir
-            .join("..")
-            .join("examples")
-            .join("minimal.mdfs");
-        let chart = compile_file(&example).unwrap();
-        assert_eq!(chart.meta.title, "Minimal Example");
-        assert!(!chart.notes.is_empty());
-    }
-}
+mod tests;
