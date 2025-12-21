@@ -1,0 +1,11 @@
+[package]
+name = "mdfs_compiler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mdf_schema = { path = "../mdf_schema" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
