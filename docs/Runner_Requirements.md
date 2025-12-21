@@ -110,6 +110,20 @@
 
 本プロジェクトは「入力の正確性計測」を最優先とするため、**`delta` を受け取る方針**とする。
 
+#### delta感度（Sensitivity）とキャリブレーション
+
+`delta` を採用する場合、デバイスごとの分解能差（1イベントあたりの増分や発火頻度）により「少し触れただけで反応する / 回しても反応しない」が起こりうる。
+このため Runner 側で感度を調整可能にしておくことを要件とする。
+
+- `RunnerConfig` に含めることを推奨するパラメータ例
+  - `scratch_min_abs_delta`: 入力1回を有効な回転として扱う最小絶対delta（ノイズ除去）
+  - `scratch_dir_threshold`: 方向（CW/CCW）を確定するためのしきい値（ヒステリシスを持たせてもよい）
+  - `scratch_move_accumulation_us`: 「Move」と見なすためのdelta蓄積の評価時間幅（瞬時判定にするなら0でもよい）
+  - `scratch_ticks_per_rotation`: 1回転相当とみなすdelta総量（統計/可視化や閾値設計に利用）
+  - `scratch_deadzone_abs_delta`: 近傍ノイズを無視するデッドゾーン（`scratch_min_abs_delta` と統合可）
+
+将来的にはキャリブレーション（実測に基づく自動推定）機能が有用になり得るが、MVPでは「設定で吸収できる」ことを優先する。
+
 ### 3.2 出力（案）
 
 - 確定したイベント列 `Vec<RunnerEvent>`（例）
@@ -123,18 +137,31 @@
 
 #### timing_error_us の定義（共通）
 
+- `timing_error_us` は負値を取りうるため、型は `i64` 相当を想定する（内部表現は実装設計に委ねるが「符号あり」であることを仕様とする）
 - `timing_error_us = satisfied_time_us - target_time_us`
 - `target_time_us` はノート/要求点の基準時刻（Tapなら `Note.time_us`、CN終点なら `end_time_us`、MSS checkpointなら `checkpoint_us`）
 - `satisfied_time_us` は「判定窓内で要件が満たされた最初の時刻」とする
   - ただし、開始時点ON許容・ウィンドウ内OFF許容のように“状態”で満たす要件については、**`target_time_us` の時点で既に要件状態を満たしている場合**は `satisfied_time_us = target_time_us` としてよい
     - 例: CN開始で `target_time_us = t_s` の瞬間にキーがONなら `timing_error_us = 0`
 
+符号の意味:
+
+- `timing_error_us < 0`: Early（FAST側）
+- `timing_error_us > 0`: Late（SLOW側）
+- `timing_error_us == 0`: ちょうど（F-GREATの条件にも使う）
+
 ### 3.3 note_id の扱い（重要）
 
 `mdf_schema` にはノートIDが存在しないため、Runner 内部で安定した識別子が必要。
 
-- MVP案: Runner初期化時に `notes` を **安定ソート**（例: `time_us`, `col`, `kind` の順）し、連番 `note_id` を割り当てる
+- MVP案: Runner初期化時に `notes` をソートし、連番 `note_id` を割り当てる
 - 代替案: 元配列インデックスを `note_id` にする（ただし入力/表示側が `.mdf` の並びに依存しやすい）
+
+安定性の補足:
+
+- 将来的な拡張やデータ不整合で「同時刻・同レーン・同種別」のノートが存在しても `note_id` が揺れないよう、**完全な順序付け**を行う
+  - 推奨: ソートキーの末尾に「元配列インデックス」を含めてタイブレークする（例: `(time_us, col, kind, original_index)`）
+  - RustのソートAPIが安定かどうかに依存しないよう、キー設計で完全順序にしておく
 
 ## 4. 内部モデル（最小構成）
 
@@ -208,6 +235,13 @@
 - 成功: start確定後 `Active` に遷移
 - 失敗: `t_s + W_start_late` を過ぎても窓内でON状態にならなければ `MISS` 確定（以後追跡しない）
 
+補足（押しっぱなし接続）:
+
+- 直前のTapで押しっぱなしのまま開始窓に入った場合でも、上記条件を満たすならCN開始として成立しうる（接続を許容）
+- ただし、より厳密に「1回のON（押下）を複数ノートに消費させない」モデル（入力消費モデル）を採用する余地はある
+  - 例: 1つの `Press` を Tap/CN開始のいずれか1回だけに割り当てる
+  - 本書ではMVPとして実装複雑度を上げないため、まずは状態ベースの要件を採用する（必要になれば将来拡張で導入）
+
 #### CN保持（保持要件）
 
 - 要求: `Active` 中、`t < t_e` に `Release` が発生してはいけない
@@ -268,7 +302,7 @@
 
 - MSS 1ノート
   - checkpoint窓内に逆回転入力 → checkpoint OK
-  - checkpoint未達 → 締切で失敗確定（以後の扱いは仕様決め）
+  - checkpoint未達 → そのcheckpointは BAD/POOR 確定、以後のcheckpointは通常通り判定できる（復活）
 
 - BGM event 1つ
   - `time_us` 到達で `BgmTrigger` が1回だけ出る
@@ -277,7 +311,7 @@
 ### 6.2 時間窓をテスト可能にする設計
 
 - `RunnerConfig`（仮）として時間窓・閾値を注入できること
-  - 例: `tap_window`, `cn_start_window`, `cn_end_window`, `rev_window`, `spin_gap_us`
+  - 例: `tap_window`, `cn_start_window`, `cn_end_window`, `rev_window`, `spin_gap_us`, `scratch_min_abs_delta`, `scratch_dir_threshold`, `scratch_move_accumulation_us`, `scratch_ticks_per_rotation`
 - テストでは小さな値を与え、境界の再現性を高める
 
 ### 6.3 ログ出力とテスト方式（CLIのみでも壊れない設計）
@@ -297,12 +331,12 @@ RunnerをCLIログ用途だけで開始する場合でも、将来のUI/可視�
 
 ### 7.1 MVP（今回確定する範囲）
 
-- 入力: `MdfChart` + `TimedInputEvent`（キーON/OFF + スクラッチ回転抽象）
+- 入力: `MdfChart` + `TimedInputEvent`（キーON/OFF + スクラッチdelta）
 - 出力: 判定イベント列 + BGM通知 + （任意で）スナップショット
 - 判定:
   - Tap/CN/HCN/BSS/HBSS/MSS/HMSS
-  - 判定ランクは `F-GRATE, P-GRATE, GRATE, GOOD, BAD, POOR`
-    - `F-GRATE` は **誤差0us**（`timing_error_us == 0`）の判定
+  - 判定ランクは `F-GREAT, P-GREAT, GREAT, GOOD, BAD, POOR`
+    - `F-GREAT` は **誤差0us**（`timing_error_us == 0`）の判定
 - 窓/閾値: Runner側定数（ただしConfig注入でテスト可能）
 
 ### 7.2 拡張案（互換を壊さず追加）
@@ -312,28 +346,12 @@ RunnerをCLIログ用途だけで開始する場合でも、将来のUI/可視�
 - Seek/巻き戻し（状態再構築）
 - スクラッチ入力の較正（delta→方向推定のパラメータ化）
 
-## 8. 決定事項リスト（実装へ進む前に合意が必要）
+## 8. 互換性とバージョニング（合意済み）
 
-1. 判定ランク: `F-GRATE, P-GRATE, GRATE, GOOD, BAD, POOR` を採用する
-2. 判定ウィンドウ: 全てIIDX標準仕様に準拠する
-3. CN/HCN start: 開始時点ONを許容する（窓内でON状態になれば開始成立）
-4. CN/HCN end: ウィンドウ内OFFを許容する（窓内でOFF状態になれば終点成立）
-5. スクラッチ入力抽象: ロバスト性重視のため `delta` 受け取り（または両対応）を推奨（最終決定は残）
-6. 回転停止判定: 逆回転は停止判定に含める
-7. MSS checkpoint失敗: 1つ失敗しても、次checkpointを正しく満たせばそこから判定が復活する
-8. 処理優先度: 入力の処理を最優先（同時刻では入力→OK確定→deadline失敗確定の順）
-9. checkpoint同時刻: 現時点の譜面では発生しない（将来DP拡張では起こりうる）
+- MSS checkpointの復活仕様: 失敗したcheckpointの結果は BAD/POOR として残しつつ、以後のcheckpointは通常通り判定する
+- `.mdf` の互換性: fail-fast（未知/非対応 `meta.version` はエラー）で進める
 
-補足（互換性）:
-- Runnerは `meta.version` による複数実装（分岐）を必須としない
-- ただし **fail-fast方針**として、Runnerが想定していない `meta.version` の `.mdf` を入力した場合は明示的にエラーとする（静かな誤判定を防ぐ）
-
-## 9. 確認質問（最大5つ）
-
-1. MSS checkpointの「復活」の詳細: 失敗したcheckpointの結果は BAD/POOR として残しつつ、以後のcheckpointは通常通り判定する、でよいか？（→合意済み）
-2. `.mdf` の互換性/バージョニング: fail-fast（未知/非対応 `meta.version` はエラー）で進める（→合意済み）
-
-### 9.1 `meta.version` をRunnerが見るメリット（提案）
+### 8.1 `meta.version` をRunnerが見るメリット（提案）
 
 Runner側の分岐（複数実装）まで今すぐ行う必要はない一方で、`meta.version` を**完全に無視**すると「仕様が変わった `.mdf` を誤って読み、静かに判定がズレる」リスクが残る。
 
@@ -344,7 +362,7 @@ Runner側の分岐（複数実装）まで今すぐ行う必要はない一方�
 
 これにより、互換性問題が「静かな誤判定」ではなく「明確な失敗」として検出でき、トレーニング用途（入力の正確性計測）に対して安全側になる。
 
-### 9.2 fail-fast採用の決定経緯（明文化）
+### 8.2 fail-fast採用の決定経緯（明文化）
 
 本プロジェクトでは、後方互換性や将来拡張を考える上で「Runnerが解釈できる `.mdf` を出力すること」は基本的にコンパイラの責務とする。
 一方で、`.mdf` の入力経路は将来にわたりコンパイラに限定されるとは限らない（例: 古い生成物の混在、手編集、外部ツール、将来の別コンパイラ/エディタ）。
@@ -360,3 +378,19 @@ Runner側の分岐（複数実装）まで今すぐ行う必要はない一方�
 1) Runner側で対応versionを追加する、または
 2) コンパイラ側で特定versionへターゲット出力（必要ならダウングレード）する
 のいずれかを、破壊的変更を避けつつ選択する。
+
+## 9. 決定事項リスト（確定サマリ）
+
+1. 判定ランク: `F-GREAT, P-GREAT, GREAT, GOOD, BAD, POOR` を採用する
+2. 判定ウィンドウ: 全てIIDX標準仕様に準拠する
+3. CN/HCN start: 開始時点ONを許容する（窓内でON状態になれば開始成立）
+4. CN/HCN end: ウィンドウ内OFFを許容する（窓内でOFF状態になれば終点成立）
+5. スクラッチ入力抽象: `delta` を受け取る方針で進める
+6. 回転停止判定: 逆回転は停止判定に含める
+7. MSS checkpoint失敗: 1つ失敗しても、次checkpointを正しく満たせばそこから判定が復活する
+8. 処理優先度: 入力の処理を最優先（同時刻では入力→OK確定→deadline失敗確定の順）
+9. checkpoint同時刻: 現時点の譜面では発生しない（将来DP拡張では起こりうる）
+
+補足（互換性）:
+- Runnerは `meta.version` による複数実装（分岐）を必須としない
+- ただし **fail-fast方針**として、Runnerが想定していない `meta.version` の `.mdf` を入力した場合は明示的にエラーとする（静かな誤判定を防ぐ）
