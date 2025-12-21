@@ -8,3 +8,4 @@ license.workspace = true
 mdf_schema = { path = "../mdf_schema" }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+clap = { workspace = true }

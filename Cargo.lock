@@ -127,6 +127,7 @@ name = "mdf_runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "mdf_schema",
  "serde_json",
 ]

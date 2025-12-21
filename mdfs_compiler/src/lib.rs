@@ -1112,6 +1112,7 @@ mod tests {
     use super::*;
     use std::{
         fs,
+        path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1213,5 +1214,17 @@ track: |
         assert_eq!(chart.notes[0].sound_id.as_deref(), Some("K01"));
         assert_eq!(chart.bgm_events.len(), 1);
         assert_eq!(chart.bgm_events[0].sound_id, "SE_END");
+    }
+
+    #[test]
+    fn repo_example_compiles() {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let example = crate_dir
+            .join("..")
+            .join("examples")
+            .join("minimal.mdfs");
+        let chart = compile_file(&example).unwrap();
+        assert_eq!(chart.meta.title, "Minimal Example");
+        assert!(!chart.notes.is_empty());
     }
 }
