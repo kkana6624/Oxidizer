@@ -46,7 +46,7 @@ pub fn compile_str_with_options(src: &str, options: CompileOptions) -> Result<Md
     let parsed = parse_mdfs(src)?;
 
     let resources = load_resources(&parsed, &options)?;
-    let (step_times, step_durations) = pass1_time_map(&parsed.track)?;
+    let (step_times, _step_durations) = pass1_time_map(&parsed.track)?;
     let (mut notes, mut bgm_events) = pass2_generate(&parsed.track, &step_times, &resources)?;
 
     notes.sort_by_key(|n| n.time_us);
@@ -550,7 +550,7 @@ fn pass1_time_map(track: &[TrackLine]) -> Result<(Vec<Microseconds>, Vec<Microse
 
     for line in track {
         match line {
-            TrackLine::Directive { line, directive } => match directive {
+            TrackLine::Directive { line: _line, directive } => match directive {
                 Directive::Bpm(v) => bpm = Some(*v),
                 Directive::Div(v) => div = Some(*v),
             },
@@ -630,7 +630,7 @@ fn pass2_generate(
 
                 // If step has only '.' but has SOUND_SPEC, generate BGM events (optional feature in spec)
                 if !has_any_note {
-                    push_bgm_events_from_sound(&mut bgm_events, time_us, &lane_sounds);
+                    push_bgm_events_from_sound(&mut bgm_events, time_us, sound);
                 }
 
                 // Validate @rev directives appear only on MSS/HMSS start lines.
@@ -680,7 +680,7 @@ fn pass2_generate(
                             &mut open,
                             time_us,
                             step_index,
-                            lane_sounds.clone(),
+                            sound,
                             lane_sounds[0].clone(),
                             OpenHoldKind::Bss,
                             *line,
@@ -691,7 +691,7 @@ fn pass2_generate(
                             &mut open,
                             time_us,
                             step_index,
-                            lane_sounds.clone(),
+                            sound,
                             lane_sounds[0].clone(),
                             OpenHoldKind::HellBss,
                             *line,
@@ -702,7 +702,7 @@ fn pass2_generate(
                             &mut open,
                             time_us,
                             step_index,
-                            lane_sounds.clone(),
+                            sound,
                             lane_sounds[0].clone(),
                             OpenHoldKind::Mss { rev: rev.clone() },
                             step_times,
@@ -714,7 +714,7 @@ fn pass2_generate(
                             &mut open,
                             time_us,
                             step_index,
-                            lane_sounds.clone(),
+                            sound,
                             lane_sounds[0].clone(),
                             OpenHoldKind::HellMss { rev: rev.clone() },
                             step_times,
@@ -733,7 +733,7 @@ fn pass2_generate(
                             match open0.kind {
                                 OpenHoldKind::Mss { .. } | OpenHoldKind::HellMss { .. } => {
                                     open0.marker_checkpoints_us.push(time_us);
-                                    push_bgm_events_from_sound(&mut bgm_events, time_us, &lane_sounds);
+                                    push_bgm_events_from_sound(&mut bgm_events, time_us, sound);
                                 }
                                 _ => {
                                     return Err(CompileError::new(
@@ -778,12 +778,21 @@ fn lane_sounds(sound: &SoundSpec) -> [Option<String>; 8] {
     }
 }
 
-fn push_bgm_events_from_sound(out: &mut Vec<BgmEvent>, time_us: Microseconds, lanes: &[Option<String>; 8]) {
-    for id in lanes.iter().flatten() {
-        out.push(BgmEvent {
+fn push_bgm_events_from_sound(out: &mut Vec<BgmEvent>, time_us: Microseconds, sound: &SoundSpec) {
+    match sound {
+        SoundSpec::None => {}
+        SoundSpec::Single(id) => out.push(BgmEvent {
             time_us,
             sound_id: id.clone(),
-        });
+        }),
+        SoundSpec::PerLane(lanes) => {
+            for id in lanes.iter().flatten() {
+                out.push(BgmEvent {
+                    time_us,
+                    sound_id: id.clone(),
+                });
+            }
+        }
     }
 }
 
@@ -854,7 +863,7 @@ fn toggle_scratch_hold_end_se(
     open: &mut [Option<OpenHold>],
     time_us: Microseconds,
     step_index: usize,
-    lane_sounds: [Option<String>; 8],
+    end_sound: &SoundSpec,
     start_sound_id: Option<String>,
     kind: OpenHoldKind,
     line: usize,
@@ -888,7 +897,7 @@ fn toggle_scratch_hold_end_se(
     }
 
     // end line SOUND_SPEC -> BgmEvent(s)
-    push_bgm_events_from_sound(bgm_events, time_us, &lane_sounds);
+    push_bgm_events_from_sound(bgm_events, time_us, end_sound);
 
     let note_kind = match existing_kind {
         OpenHoldKind::Bss => NoteKind::BackSpinScratch {
@@ -915,7 +924,7 @@ fn toggle_mss(
     open: &mut [Option<OpenHold>],
     time_us: Microseconds,
     step_index: usize,
-    lane_sounds: [Option<String>; 8],
+    end_sound: &SoundSpec,
     start_sound_id: Option<String>,
     kind: OpenHoldKind,
     step_times: &[Microseconds],
@@ -965,7 +974,7 @@ fn toggle_mss(
     }
 
     // end line SOUND_SPEC -> BgmEvent(s)
-    push_bgm_events_from_sound(bgm_events, time_us, &lane_sounds);
+    push_bgm_events_from_sound(bgm_events, time_us, end_sound);
 
     let checkpoints = compute_mss_checkpoints(start_step, step_index, time_us, step_times, &rev, &marker_us, line)?;
     let note_kind = if is_hell {
@@ -1101,6 +1110,10 @@ fn compute_total_duration_us(notes: &[Note], bgm_events: &[BgmEvent]) -> Microse
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn compile_minimal_tap_without_manifest_if_no_sound_ids() {
@@ -1152,5 +1165,53 @@ track: |
             }
             _ => panic!("unexpected kind"),
         }
+    }
+
+    #[test]
+    fn compile_with_manifest_loads_resources_and_validates_sound_ids() {
+        let tmp_base = std::env::temp_dir().join(format!(
+            "oxidizer_mdfs_compiler_test_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&tmp_base).unwrap();
+        let manifest_path = tmp_base.join("sounds.json");
+        fs::write(
+            &manifest_path,
+                        r#"{
+    "K01": "kick.wav",
+    "SE_END": "end.wav"
+}"#,
+        )
+        .unwrap();
+
+        let src = r#"
+@title T
+@artist A
+@version 2.2
+@sound_manifest sounds.json
+track: |
+  @bpm 120
+  @div 4
+  ..N..... : K01
+  ........ : SE_END
+"#;
+
+        let chart = compile_str_with_options(
+            src,
+            CompileOptions {
+                base_dir: Some(tmp_base.clone()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(chart.resources.get("K01").unwrap(), "kick.wav");
+        assert_eq!(chart.notes.len(), 1);
+        assert_eq!(chart.notes[0].sound_id.as_deref(), Some("K01"));
+        assert_eq!(chart.bgm_events.len(), 1);
+        assert_eq!(chart.bgm_events[0].sound_id, "SE_END");
     }
 }
