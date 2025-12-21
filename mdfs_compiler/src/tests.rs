@@ -1,5 +1,11 @@
 use super::*;
+use crate::{
+    generate::pass2_generate,
+    parser::{RevSpec, SoundSpec, TrackLine},
+};
+use mdf_schema::{Microseconds, NoteKind};
 use std::{
+    collections::HashMap,
     fs,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
