@@ -1,0 +1,15 @@
+@title Minimal Example
+@artist Example Artist
+@version 2.2
+@tags training, minimal
+@sound_manifest sounds.json
+track: |
+  @bpm 120
+  @div 4
+
+  # Tap + BGM event
+  ..N..... : K01
+  ........ : SE_END
+
+  # Scratch tap
+  S....... : S01

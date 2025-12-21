@@ -137,6 +137,34 @@ pub struct BgmEvent {
 補足:
 * `VisualEvent` の `beat_n` / `beat_d` は**表示（ガイド目盛り）用**であり、譜面の判定要件やノーツ生成ロジックの根拠として利用しない。
 
+### `visual_events` / `speed_events` の位置づけ（MVP方針）
+
+本仕様における `visual_events` / `speed_events` は、**判定要件そのもの**（ノーツの開始/終了/中間チェックポイント）とは独立した、
+レンダリングやスクロール表現を安定させるための「補助イベント」である。
+
+重要:
+* ランナー/ビューアは、`visual_events` / `speed_events` が **空配列でも動作できる**（=補助線が無いだけ）こと。
+* これらのイベントは **ヒント（表示補助）**であり、ノーツ生成や判定要件の根拠として利用してはならない。
+
+* `visual_events`
+    * 主目的: BPM変化の表示、ガイド目盛り（小節線/拍線相当）の描画など。
+    * `beat_n/beat_d` はガイド表示用の分数であり、ノーツ生成・判定の根拠には使わない。
+* `speed_events`
+    * 主目的: スクロール倍率（`scroll_rate`）の変更点を、絶対時間で列挙する。
+
+空配列時のデフォルト解釈:
+* `speed_events` が空の場合、スクロール倍率は **常に 1.0** とみなしてよい（スクロール変化なし）。
+* `visual_events` が空の場合、ビューアは BPM表示やガイド目盛り表示を **省略してよい**（補助線なし）。
+
+**MVP（コンパイラ最小実装）では、両方とも空配列でよい。**
+
+推奨（将来拡張時）:
+* コンパイラが `visual_events` を出力する場合、少なくとも「トラック開始時点のBPM」と「BPM変更点」を列挙することを推奨する。
+    * ガイド目盛りが未実装の場合、`is_measure_line=false` かつ `beat_n=0, beat_d=0` を「未指定」として出力してよい。
+* コンパイラが `speed_events` を出力する場合、少なくとも「トラック開始時点の `scroll_rate`」を出力し、以後の変更点を列挙する。
+
+（いずれの場合も、ノーツ生成や `@rev_at` の計算は Pass 1 の時刻マップのみを根拠にする。）
+
 # 2. 判定仕様: チャージ系ノーツ前提 (Judgement Assumptions)
 
 この節は「譜面データが表現するもの（開始/終了/中間）」と「ランナーが判定するルール」を明確化する。
@@ -188,6 +216,38 @@ pub struct BgmEvent {
     * HMSSの終点要件（終点での逆回転）は、終点到来時点で入力が有効な場合に判定される。
 
 # 3. 記述言語: MDFS DSL Specification
+
+## 3.0 ヘッダ（メタデータ）
+
+`.mdfs` は `track: |` 本文（譜面行列）に加え、ファイル先頭側に**メタデータ**を記述できる。
+本節では `.mdf` の `MdfChart.meta`（`Metadata`）の供給元を `.mdfs` 内に定義する。
+
+### メタデータディレクティブ
+
+`track: |` の開始前（推奨）に、以下のディレクティブで `Metadata` を定義する。
+
+* `@title <string>`
+* `@artist <string>`
+* `@version <string>`
+* `@tags <csv>`
+    * 例: `@tags training, scratch, mss`
+
+文字列の扱い:
+* `<string>` はディレクティブ名以降の残りを（前後トリムして）文字列として扱う。
+* 文字列内の空白は許容する（例: `@title My Great Song`）。
+
+必須/省略規則:
+* `@title` / `@artist` / `@version` は必須（未指定はコンパイルエラー）。
+* `@tags` は省略可能で、省略時は空配列 `[]` とする。
+
+`total_duration_us` の決定:
+* `.mdfs` 側で明示指定はしない（現行仕様）。
+* コンパイラは出力 `.mdf` の `meta.total_duration_us` を、生成された全イベントの最大時刻から決定する。
+    * 対象: `notes`（Tapは `time_us`、ホールドは `max(time_us, end_time_us)`）、`bgm_events`、および実装が生成するなら `visual_events` / `speed_events`。
+
+メタデータディレクティブの出現位置:
+* `track: |` 開始前を推奨する。
+* `track: |` 開始後（本文中）に出現した場合の扱いは実装依存としてよいが、MVPでは「エラー」とすることを推奨する（曖昧さ回避）。
 
 ## 3.1 記述ルール (Body)
 
@@ -426,6 +486,10 @@ MSS/HMSSホールド開始行（`m` または `M` が出現した行）の末尾
 通常ノーツのリズムの中に、CNが混ざる実践的な例です。
 
 ```text
+@title Mixed Pattern Example
+@artist Example Artist
+@version 2.2
+@tags training, scratch, cn, mss
 @sound_manifest sounds.json
 track: |
     @bpm 150
@@ -510,6 +574,10 @@ track: |
 入力（抜粋）:
 
 ```text
+@title MSS Minimal Example
+@artist Example Artist
+@version 2.2
+@tags training, scratch, mss
 @sound_manifest sounds.json
 track: |
     @bpm 150
@@ -695,6 +763,10 @@ struct CompilerContext {
 | E3003 | TimeMap | `@bpm` の値が不正（0以下/NaN/Infinity等） | line, message |
 | E3004 | TimeMap | `@div` の値が不正（0以下） | line, message |
 | E3005 | TimeMap | Pass 1 の時刻計算がオーバーフローした（`time_us` が `u64` 範囲外） | line, message |
+| E3201 | Parse | `@title` が未指定（メタデータ必須要件違反） | file, message |
+| E3202 | Parse | `@artist` が未指定（メタデータ必須要件違反） | file, message |
+| E3203 | Parse | `@version` が未指定（メタデータ必須要件違反） | file, message |
+| E3204 | Parse | `@tags` の構文が不正（CSV解釈不能等。実装が厳密検証する場合） | line, message |
 | E4001 | Validation | 予約語（未定義文字）が先頭8文字に出現した | line, lane, char |
 | E4002 | Validation | スクラッチ専用文字（`S`/`b`/`m`/`B`/`M`）が col0 以外に出現した | line, lane |
 | E4003 | Validation | `!` が col0 以外、または MSS/HMSSホールド中以外に出現した | line, lane |
