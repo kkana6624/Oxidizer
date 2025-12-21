@@ -250,6 +250,7 @@ fn validate_step_cell(idx: usize, ch: char, context_line: &str, line_no: usize) 
                 line_no,
             )
             .with_ch(ch)
+            .with_help("Use one of: . N S l h b m B M !")
             .with_lane(idx as u8)
             .with_context(context_line.to_string()),
         );
@@ -264,6 +265,7 @@ fn validate_step_cell(idx: usize, ch: char, context_line: &str, line_no: usize) 
                 ),
                 line_no,
             )
+            .with_help("Scratch-only chars (S b m B M) are only allowed on lane=0.")
             .with_lane(idx as u8)
             .with_context(context_line.to_string()),
         );
@@ -278,6 +280,7 @@ fn validate_step_cell(idx: usize, ch: char, context_line: &str, line_no: usize) 
                 ),
                 line_no,
             )
+            .with_help("Move '!' to lane=0 (scratch lane).")
             .with_lane(idx as u8)
             .with_context(context_line.to_string()),
         );
@@ -293,6 +296,7 @@ fn validate_step_cell(idx: usize, ch: char, context_line: &str, line_no: usize) 
                 line_no,
             )
             .with_ch(ch)
+            .with_help("Scratch lane (lane=0) does not allow 'l'/'h'. Use '.' / 'N' / scratch-specific chars instead.")
             .with_lane(0)
             .with_context(context_line.to_string()),
         );

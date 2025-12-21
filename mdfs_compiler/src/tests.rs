@@ -11,6 +11,21 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+fn norm_path(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
+fn assert_path_ends_with(actual: Option<&str>, suffix: &str) {
+    let Some(actual) = actual else {
+        panic!("expected file path, got None");
+    };
+    let n = norm_path(actual);
+    assert!(
+        n.ends_with(suffix) || n.ends_with(&format!("/{suffix}")),
+        "path '{n}' does not end with '{suffix}'"
+    );
+}
+
 #[test]
 fn compile_minimal_tap_without_manifest_if_no_sound_ids() {
     let src = r#"
@@ -120,6 +135,18 @@ fn repo_example_compiles() {
 }
 
 #[test]
+fn error_code_missing_input_file_is_e2001_with_file_field() {
+    let missing = PathBuf::from("this_file_should_not_exist_oxidizer_test_12345.mdfs");
+    let err = compile_file(&missing).unwrap_err();
+    assert_eq!(err.code, "E2001");
+    assert_eq!(err.kind, CompileErrorKind::IO);
+    assert_eq!(err.line, 0);
+    assert_path_ends_with(err.file.as_deref(), "this_file_should_not_exist_oxidizer_test_12345.mdfs");
+    // OS によりエラーメッセージ本文（No such file...）は変わるため、prefix のみ固定
+    assert!(err.message.starts_with("failed to read input .mdfs:"));
+}
+
+#[test]
 fn error_code_unknown_directive_is_e1006() {
     let src = r#"
 @title T
@@ -134,6 +161,17 @@ track: |
     let err = compile_str(src).unwrap_err();
     assert_eq!(err.code, "E1006");
     assert_eq!(err.kind, CompileErrorKind::Parse);
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.context, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -150,6 +188,17 @@ track: |
     let err = compile_str(src).unwrap_err();
     assert_eq!(err.code, "E1101");
     assert_eq!(err.kind, CompileErrorKind::Parse);
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.context.as_deref(), Some("..."));
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -197,6 +246,10 @@ track: |
     assert_eq!(err.line, 8);
     assert_eq!(err.lane, Some(2));
     assert_eq!(err.sound_id.as_deref(), Some("K01"));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Add @sound_manifest <path> to load a manifest, or remove sound_id references.")
+    );
     assert!(err.message.contains("sound_id=K01"));
     assert!(err.message.contains("lane=2"));
 }
@@ -229,6 +282,10 @@ fn error_code_sound_id_missing_in_manifest_is_e2101_with_sound_id_and_lane() {
     assert_eq!(err.line, 8);
     assert_eq!(err.lane, Some(2));
     assert_eq!(err.sound_id.as_deref(), Some("K01"));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Add the sound_id to the manifest, or fix the referenced sound_id.")
+    );
     assert!(err.message.contains("sound_id=K01"));
     assert!(err.message.contains("lane=2"));
 }
@@ -248,6 +305,17 @@ track: |
     assert_eq!(err.code, "E3005");
     assert_eq!(err.kind, CompileErrorKind::TimeMap);
     assert_eq!(err.line, 8);
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.context, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -281,6 +349,10 @@ fn error_code_e4004_tap_then_hold_start_same_time_lane() {
     assert_eq!(err.step_index, Some(1));
     assert_eq!(err.time_us, Some(0));
     assert_eq!(err.lane, Some(1));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Avoid starting a tap and a hold on the same lane at the same time.")
+    );
     assert!(err.message.contains("lane=1"));
     assert!(err.message.contains("time_us=0"));
     assert!(err.message.contains("overlaps"));
@@ -313,6 +385,14 @@ fn error_code_e4004_hold_start_then_tap_same_time_lane() {
 
     let err = pass2_generate(&track, &step_times, &resources).unwrap_err();
     assert_eq!(err.code, "E4004");
+    assert_eq!(err.kind, CompileErrorKind::Validation);
+    assert_eq!(err.step_index, Some(1));
+    assert_eq!(err.time_us, Some(0));
+    assert_eq!(err.lane, Some(1));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Avoid starting a tap and a hold on the same lane at the same time.")
+    );
     assert!(err.message.contains("lane=1"));
     assert!(err.message.contains("time_us=0"));
     assert!(err.message.contains("overlaps"));
@@ -325,6 +405,11 @@ fn error_code_missing_bpm_before_steps_is_e3001() {
     assert_eq!(err.code, "E3001");
     assert_eq!(err.kind, CompileErrorKind::TimeMap);
     assert_eq!(err.line, 6);
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.lane, None);
 }
 
 #[test]
@@ -334,6 +419,11 @@ fn error_code_missing_div_before_steps_is_e3002() {
     assert_eq!(err.code, "E3002");
     assert_eq!(err.kind, CompileErrorKind::TimeMap);
     assert_eq!(err.line, 6);
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.lane, None);
 }
 
 #[test]
@@ -347,7 +437,8 @@ fn error_code_invalid_manifest_json_is_e2002() {
             .as_nanos()
     ));
     fs::create_dir_all(&tmp_base).unwrap();
-    fs::write(tmp_base.join("sounds.json"), "not json").unwrap();
+    let manifest_path = tmp_base.join("sounds.json");
+    fs::write(&manifest_path, "not json").unwrap();
 
     let src = "@title T\n@artist A\n@version 2.2\n@sound_manifest sounds.json\ntrack: |\n  @bpm 120\n  @div 4\n  ........\n";
     let err = compile_str_with_options(
@@ -360,6 +451,17 @@ fn error_code_invalid_manifest_json_is_e2002() {
     assert_eq!(err.code, "E2002");
     assert_eq!(err.kind, CompileErrorKind::IO);
     assert_eq!(err.line, 4);
+    assert_path_ends_with(err.file.as_deref(), "sounds.json");
+    assert_eq!(err.help, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.context, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -373,7 +475,8 @@ fn error_code_invalid_manifest_values_is_e2003() {
             .as_nanos()
     ));
     fs::create_dir_all(&tmp_base).unwrap();
-    fs::write(tmp_base.join("sounds.json"), r#"{"K01":""}"#).unwrap();
+    let manifest_path = tmp_base.join("sounds.json");
+    fs::write(&manifest_path, r#"{"K01":""}"#).unwrap();
 
     let src = "@title T\n@artist A\n@version 2.2\n@sound_manifest sounds.json\ntrack: |\n  @bpm 120\n  @div 4\n  ........\n";
     let err = compile_str_with_options(
@@ -386,6 +489,17 @@ fn error_code_invalid_manifest_values_is_e2003() {
     assert_eq!(err.code, "E2003");
     assert_eq!(err.kind, CompileErrorKind::IO);
     assert_eq!(err.line, 4);
+    assert_path_ends_with(err.file.as_deref(), "sounds.json");
+    assert_eq!(err.help, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.context, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -395,6 +509,29 @@ fn error_code_multiple_sound_manifest_is_e2004() {
     assert_eq!(err.code, "E2004");
     assert_eq!(err.kind, CompileErrorKind::IO);
     assert_eq!(err.line, 5);
+    assert_eq!(err.file, None);
+    assert_eq!(err.help, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.context, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
+}
+
+#[test]
+fn error_code_sound_manifest_without_base_dir_is_e2001() {
+    let src = "@title T\n@artist A\n@version 2.2\n@sound_manifest sounds.json\ntrack: |\n  @bpm 120\n  @div 4\n  ........\n";
+    let err = compile_str(src).unwrap_err();
+    assert_eq!(err.code, "E2001");
+    assert_eq!(err.kind, CompileErrorKind::IO);
+    assert_eq!(err.line, 4);
+    assert_eq!(err.message, "@sound_manifest requires compile_file() or CompileOptions.base_dir");
+    assert_eq!(err.file, None);
+    assert_eq!(err.help, None);
 }
 
 #[test]
@@ -404,6 +541,12 @@ fn error_code_rev_directive_outside_mss_hmss_is_e4201() {
     assert_eq!(err.code, "E4201");
     assert_eq!(err.kind, CompileErrorKind::Semantic);
     assert_eq!(err.line, 7);
+    assert_eq!(err.step_index, Some(0));
+    assert_eq!(err.time_us, Some(0));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Move @rev_every/@rev_at onto a step whose lane=0 cell is 'm' or 'M'.")
+    );
 }
 
 #[test]
@@ -418,9 +561,49 @@ fn error_code_unclosed_toggle_is_e4101() {
     assert_eq!(err.lane, Some(1));
     assert_eq!(err.start_line, Some(7));
     assert_eq!(err.start_time_us, Some(0));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Close the open toggle by adding the matching end toggle on the same lane.")
+    );
     assert!(err.message.contains("lane=1"));
     assert!(err.message.contains("start_line=7"));
     assert!(err.message.contains("start_time_us="));
+}
+
+#[test]
+fn error_code_hold_type_mismatch_is_e4101() {
+    // lane=1: start 'l' (CN) then toggle with 'h' (HCN) -> mismatch
+    let src = "@title T\n@artist A\n@version 2.2\ntrack: |\n  @bpm 120\n  @div 4\n  .l......\n  .h......\n";
+    let err = compile_str(src).unwrap_err();
+    assert_eq!(err.code, "E4101");
+    assert_eq!(err.kind, CompileErrorKind::Validation);
+    assert_eq!(err.line, 8);
+    assert_eq!(err.message, "hold type mismatch while toggling");
+    assert_eq!(err.lane, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
+}
+
+#[test]
+fn error_code_scratch_hold_type_mismatch_is_e4101() {
+    // scratch lane=0: start 'b' (BSS) then toggle with 'B' (HBSS) -> mismatch
+    let src = "@title T\n@artist A\n@version 2.2\ntrack: |\n  @bpm 120\n  @div 4\n  b.......\n  B.......\n";
+    let err = compile_str(src).unwrap_err();
+    assert_eq!(err.code, "E4101");
+    assert_eq!(err.kind, CompileErrorKind::Validation);
+    assert_eq!(err.line, 8);
+    assert_eq!(err.message, "hold type mismatch while toggling");
+}
+
+#[test]
+fn error_code_mss_hold_type_mismatch_is_e4101() {
+    // scratch lane=0: start 'm' (MSS) then toggle with 'M' (HMSS) -> mismatch
+    let src = "@title T\n@artist A\n@version 2.2\ntrack: |\n  @bpm 120\n  @div 4\n  m.......\n  M.......\n";
+    let err = compile_str(src).unwrap_err();
+    assert_eq!(err.code, "E4101");
+    assert_eq!(err.kind, CompileErrorKind::Validation);
+    assert_eq!(err.line, 8);
+    assert_eq!(err.message, "hold type mismatch while toggling");
 }
 
 #[test]
@@ -430,6 +613,31 @@ fn error_code_marker_during_bss_is_e4102() {
     assert_eq!(err.code, "E4102");
     assert_eq!(err.kind, CompileErrorKind::Validation);
     assert_eq!(err.line, 8);
+    assert_eq!(err.lane, Some(0));
+    assert_eq!(err.step_index, Some(1));
+    assert_eq!(err.time_us, Some(500_000));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Do not place '!' during BSS/HBSS; use markers during MSS/HMSS instead.")
+    );
+}
+
+#[test]
+fn error_code_marker_without_mss_hmss_is_e4003_with_help_and_time() {
+    // marker checkpoint requires MSS/HMSS to be active (generate-stage validation)
+    let src = "@title T\n@artist A\n@version 2.2\ntrack: |\n  @bpm 120\n  @div 4\n  !.......\n";
+    let err = compile_str(src).unwrap_err();
+    assert_eq!(err.code, "E4003");
+    assert_eq!(err.kind, CompileErrorKind::Validation);
+    assert_eq!(err.line, 7);
+    assert_eq!(err.lane, Some(0));
+    assert_eq!(err.step_index, Some(0));
+    assert_eq!(err.time_us, Some(0));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Start MSS/HMSS (m/M on lane=0) before using '!', or remove the marker.")
+    );
+    assert!(err.message.contains("MSS/HMSS"));
 }
 
 #[test]
@@ -439,6 +647,16 @@ fn parse_error_e1101_includes_context() {
     assert_eq!(err.code, "E1101");
     assert!(err.message.contains("context="));
     assert_eq!(err.context.as_deref(), Some("..."));
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -448,6 +666,17 @@ fn parse_error_e1001_invalid_sound_spec_token_includes_context() {
     assert_eq!(err.code, "E1001");
     assert!(err.message.contains("context="));
     assert_eq!(err.context.as_deref(), Some("..N..... : K01 K02"));
+    assert_eq!(err.kind, CompileErrorKind::Parse);
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -457,6 +686,17 @@ fn parse_error_e1002_sound_spec_wrong_slots_includes_context() {
     assert_eq!(err.code, "E1002");
     assert!(err.message.contains("context="));
     assert_eq!(err.context.as_deref(), Some("..N..... : [K01,-,-,-,-,-,-]"));
+    assert_eq!(err.kind, CompileErrorKind::Parse);
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.lane, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -468,6 +708,16 @@ fn parse_error_e1003_sound_spec_empty_slot_includes_context() {
     assert!(err.message.contains("lane=1"));
     assert_eq!(err.lane, Some(1));
     assert_eq!(err.context.as_deref(), Some("..N..... : [K01,,-,-,-,-,-,-]"));
+    assert_eq!(err.kind, CompileErrorKind::Parse);
+    assert_eq!(err.help, None);
+    assert_eq!(err.file, None);
+    assert_eq!(err.column, None);
+    assert_eq!(err.step_index, None);
+    assert_eq!(err.time_us, None);
+    assert_eq!(err.sound_id, None);
+    assert_eq!(err.ch, None);
+    assert_eq!(err.start_line, None);
+    assert_eq!(err.start_time_us, None);
 }
 
 #[test]
@@ -478,10 +728,22 @@ fn parse_error_e4001_undefined_step_char_includes_lane_char_context() {
     assert_eq!(err.line, 7);
     assert_eq!(err.lane, Some(2));
     assert_eq!(err.ch, Some('X'));
+    assert_eq!(err.help.as_deref(), Some("Use one of: . N S l h b m B M !"));
     assert_eq!(err.context.as_deref(), Some("..X....."));
     assert!(err.message.contains("lane=2"));
     assert!(err.message.contains("char='X'"));
     assert!(err.message.contains("context=..X....."));
+}
+
+#[test]
+fn display_output_does_not_include_help() {
+    let src = "@title T\n@artist A\n@version 2.2\ntrack: |\n  @bpm 120\n  @div 4\n  ..X.....\n";
+    let err = compile_str(src).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "E4001: undefined step char (lane=2, char='X', context=..X.....) (line 7)"
+    );
+    assert!(err.help.is_some());
 }
 
 #[test]
@@ -492,6 +754,10 @@ fn parse_error_e4001_char_not_allowed_on_scratch_lane_includes_context() {
     assert_eq!(err.line, 7);
     assert_eq!(err.lane, Some(0));
     assert_eq!(err.ch, Some('l'));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Scratch lane (lane=0) does not allow 'l'/'h'. Use '.' / 'N' / scratch-specific chars instead.")
+    );
     assert_eq!(err.context.as_deref(), Some("l......."));
     assert!(err.message.contains("lane=0"));
     assert!(err.message.contains("char='l'"));
@@ -505,6 +771,10 @@ fn parse_error_e4002_scratch_only_char_on_non_scratch_includes_lane_char_context
     assert_eq!(err.code, "E4002");
     assert_eq!(err.line, 7);
     assert_eq!(err.lane, Some(1));
+    assert_eq!(
+        err.help.as_deref(),
+        Some("Scratch-only chars (S b m B M) are only allowed on lane=0.")
+    );
     assert_eq!(err.context.as_deref(), Some(".S......"));
     assert!(err.message.contains("lane=1"));
     assert!(err.message.contains("char='S'"));
@@ -518,6 +788,7 @@ fn parse_error_e4003_bang_on_non_scratch_includes_lane_context() {
     assert_eq!(err.code, "E4003");
     assert_eq!(err.line, 7);
     assert_eq!(err.lane, Some(1));
+    assert_eq!(err.help.as_deref(), Some("Move '!' to lane=0 (scratch lane)."));
     assert_eq!(err.context.as_deref(), Some(".!......"));
     assert!(err.message.contains("lane=1"));
     assert!(err.message.contains("context=.!......"));

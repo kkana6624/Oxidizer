@@ -49,6 +49,7 @@ fn register_tap_start(
                     ),
                     line,
                 )
+                .with_help("Avoid starting a tap and a hold on the same lane at the same time.")
                 .with_step_index(step_index)
                 .with_time_us(time_us)
                 .with_lane(lane_u8),
@@ -79,6 +80,7 @@ fn register_hold_start(
                     ),
                     line,
                 )
+                .with_help("Avoid starting a tap and a hold on the same lane at the same time.")
                 .with_step_index(step_index)
                 .with_time_us(time_us)
                 .with_lane(lane_u8),
@@ -108,6 +110,7 @@ fn handle_marker_checkpoint(
                 "'!' is only valid while MSS/HMSS is active",
                 line,
             )
+            .with_help("Start MSS/HMSS (m/M on lane=0) before using '!', or remove the marker.")
             .with_step_index(step_index)
             .with_time_us(time_us)
             .with_lane(0),
@@ -125,6 +128,7 @@ fn handle_marker_checkpoint(
                 "'!' is not allowed while BSS/HBSS is active",
                 line,
             )
+            .with_help("Do not place '!' during BSS/HBSS; use markers during MSS/HMSS instead.")
             .with_step_index(step_index)
             .with_time_us(time_us)
             .with_lane(0),
@@ -135,6 +139,7 @@ fn handle_marker_checkpoint(
                 "'!' is only valid while MSS/HMSS is active",
                 line,
             )
+            .with_help("Start MSS/HMSS (m/M on lane=0) before using '!', or remove the marker.")
             .with_step_index(step_index)
             .with_time_us(time_us)
             .with_lane(0),
@@ -184,6 +189,7 @@ pub(crate) fn pass2_generate(
                             "@rev_every/@rev_at only allowed on MSS/HMSS start line",
                             *line,
                         )
+                        .with_help("Move @rev_every/@rev_at onto a step whose lane=0 cell is 'm' or 'M'.")
                         .with_step_index(step_index)
                         .with_time_us(time_us),
                     );
@@ -409,6 +415,7 @@ pub(crate) fn pass2_generate(
                     ),
                     h.start_line,
                 )
+                .with_help("Close the open toggle by adding the matching end toggle on the same lane.")
                 .with_lane(col as u8)
                 .with_step_index(h.start_step_index)
                 .with_time_us(h.start_time_us)
@@ -449,6 +456,7 @@ fn validate_sound_id(
             line,
         )
         .with_sound_id(sound_id);
+        err = err.with_help("Add @sound_manifest <path> to load a manifest, or remove sound_id references.");
         if let Some(lane_u8) = lane_u8 {
             err = err.with_lane(lane_u8);
         }
@@ -467,6 +475,7 @@ fn validate_sound_id(
             line,
         )
         .with_sound_id(sound_id);
+        err = err.with_help("Add the sound_id to the manifest, or fix the referenced sound_id.");
         if let Some(lane_u8) = lane_u8 {
             err = err.with_lane(lane_u8);
         }

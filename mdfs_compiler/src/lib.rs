@@ -13,11 +13,22 @@ mod time_map;
 
 pub use error::{CompileError, CompileErrorKind};
 
+/// Options for compilation.
+///
+/// MVP: currently only controls how relative paths (e.g. `@sound_manifest`) are resolved.
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
+    /// Base directory used to resolve relative paths.
+    ///
+    /// - `compile_file()` sets this automatically to the input file's parent directory.
+    /// - `compile_str()` uses `None` by default.
     pub base_dir: Option<PathBuf>,
 }
 
+/// Compile an `.mdfs` file into an `MdfChart`.
+///
+/// Returns `CompileError` on failure. Its `Display` output is stable and only includes
+/// `code`, `message` and `line` (structured fields are available separately).
 pub fn compile_file(path: impl AsRef<Path>) -> Result<MdfChart, CompileError> {
     let path = path.as_ref();
     let src = fs::read_to_string(path)
@@ -29,10 +40,12 @@ pub fn compile_file(path: impl AsRef<Path>) -> Result<MdfChart, CompileError> {
     compile_str_with_options(&src, CompileOptions { base_dir })
 }
 
+/// Compile `.mdfs` source text into an `MdfChart`.
 pub fn compile_str(src: &str) -> Result<MdfChart, CompileError> {
     compile_str_with_options(src, CompileOptions::default())
 }
 
+/// Compile `.mdfs` source text into an `MdfChart` with options.
 pub fn compile_str_with_options(src: &str, options: CompileOptions) -> Result<MdfChart, CompileError> {
     let parsed = parser::parse_mdfs(src)?;
 
