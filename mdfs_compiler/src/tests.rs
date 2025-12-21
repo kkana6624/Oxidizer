@@ -135,6 +135,46 @@ fn repo_example_compiles() {
 }
 
 #[test]
+fn repo_mixed_long_example_compiles_and_generates_expected_kinds() {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let example = crate_dir
+        .join("..")
+        .join("examples")
+        .join("mixed_long.mdfs");
+
+    let chart = compile_file(&example).unwrap();
+    assert_eq!(chart.meta.title, "Mixed Long Example");
+
+    // `@sound_manifest sounds.json` should be loaded.
+    assert!(chart.resources.contains_key("K01"));
+    assert!(chart.resources.contains_key("S01"));
+    assert!(chart.resources.contains_key("SE_CP"));
+    assert!(chart.resources.contains_key("SE_END"));
+
+    // Keep assertions robust: don't pin exact timestamps, just presence of kinds.
+    assert!(!chart.notes.is_empty());
+    assert!(!chart.bgm_events.is_empty());
+
+    let mut has_cn = false;
+    let mut has_bss = false;
+    let mut has_mss = false;
+    for n in &chart.notes {
+        match &n.kind {
+            NoteKind::ChargeNote { .. } => has_cn = true,
+            NoteKind::BackSpinScratch { .. } => has_bss = true,
+            NoteKind::MultiSpinScratch { .. } => has_mss = true,
+            _ => {}
+        }
+    }
+    assert!(has_cn);
+    assert!(has_bss);
+    assert!(has_mss);
+
+    assert!(chart.bgm_events.iter().any(|e| e.sound_id == "SE_CP"));
+    assert!(chart.bgm_events.iter().any(|e| e.sound_id == "SE_END"));
+}
+
+#[test]
 fn error_code_missing_input_file_is_e2001_with_file_field() {
     let missing = PathBuf::from("this_file_should_not_exist_oxidizer_test_12345.mdfs");
     let err = compile_file(&missing).unwrap_err();

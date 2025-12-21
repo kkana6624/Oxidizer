@@ -1,0 +1,40 @@
+@title Mixed Long Example
+@artist Example Artist
+@version 2.2
+@tags training, scratch, cn, mss, demo
+@sound_manifest sounds.json
+track: |
+  @bpm 150
+  @div 16
+
+  # --- Section 1: taps + BGM events ---
+  S....... : [S01,-,-,-,-,-,-,-]
+  ..N..... : [-,-,K01,-,-,-,-,-]
+  ........ : SE_CP
+  ..N..... : [-,-,K01,-,-,-,-,-]
+  S....... : [S01,-,-,-,-,-,-,-]
+  ........
+  ..N..... : [-,-,K01,-,-,-,-,-]
+  ........ : SE_CP
+
+  # --- Section 2: CN + taps ---
+  .l.....N : [-,-,-,-,-,-,-,K01]
+  .......N : K01
+  .......N : K01
+  .l.....N : [-,-,-,-,-,-,-,K01]
+
+  # --- Section 3: BSS + taps (end SE becomes BgmEvent) ---
+  b..N.... : [S01,-,-,K01,-,-,-,-]
+  ...N.... : [-,-,-,K01,-,-,-,-]
+  ...N.... : [-,-,-,K01,-,-,-,-]
+  b....... : SE_END
+
+  # --- Section 4: MSS with markers + rev_every ---
+  @bpm 120
+  @div 8
+  m....... : [S01,-,-,-,-,-,-,-] @rev_every 2
+  !....... : SE_CP
+  ........
+  !....... : SE_CP
+  ........
+  m....... : SE_END
