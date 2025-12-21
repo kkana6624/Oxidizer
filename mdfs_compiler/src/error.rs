@@ -51,6 +51,15 @@ pub struct CompileError {
     pub lane: Option<u8>,
     pub time_us: Option<Microseconds>,
     pub context: Option<String>,
+
+    // Spec 6.1: optional help
+    pub help: Option<String>,
+
+    // Spec 6.2: recommended independent fields
+    pub sound_id: Option<String>,
+    pub ch: Option<char>,
+    pub start_line: Option<usize>,
+    pub start_time_us: Option<u64>,
 }
 
 impl CompileError {
@@ -67,6 +76,12 @@ impl CompileError {
             lane: None,
             time_us: None,
             context: None,
+
+            help: None,
+            sound_id: None,
+            ch: None,
+            start_line: None,
+            start_time_us: None,
         }
     }
 
@@ -97,6 +112,31 @@ impl CompileError {
 
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
+        self
+    }
+
+    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help = Some(help.into());
+        self
+    }
+
+    pub fn with_sound_id(mut self, sound_id: impl Into<String>) -> Self {
+        self.sound_id = Some(sound_id.into());
+        self
+    }
+
+    pub fn with_ch(mut self, ch: char) -> Self {
+        self.ch = Some(ch);
+        self
+    }
+
+    pub fn with_start_line(mut self, start_line: usize) -> Self {
+        self.start_line = Some(start_line);
+        self
+    }
+
+    pub fn with_start_time_us(mut self, start_time_us: u64) -> Self {
+        self.start_time_us = Some(start_time_us);
         self
     }
 }

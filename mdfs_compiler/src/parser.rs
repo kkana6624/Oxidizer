@@ -198,6 +198,22 @@ fn parse_track_directive(trimmed: &str, line_no: usize) -> Result<Option<Directi
 }
 
 fn parse_step_line(trimmed: &str, line_no: usize) -> Result<TrackLine, CompileError> {
+    let (cells, tail) = parse_step_cells_and_tail(trimmed, line_no)?;
+    validate_step_cells(&cells, trimmed, line_no)?;
+    let (sound, rev) = parse_step_tail(tail, trimmed, line_no)?;
+
+    Ok(TrackLine::Step {
+        line: line_no,
+        cells,
+        sound,
+        rev,
+    })
+}
+
+fn parse_step_cells_and_tail(
+    trimmed: &str,
+    line_no: usize,
+) -> Result<([char; 8], &str), CompileError> {
     let mut chars = trimmed.chars();
     let mut cells = ['.'; 8];
     for idx in 0..8 {
@@ -212,75 +228,77 @@ fn parse_step_line(trimmed: &str, line_no: usize) -> Result<TrackLine, CompileEr
                 .with_context(trimmed.to_string())
             })?;
     }
+    Ok((cells, chars.as_str().trim()))
+}
 
+fn validate_step_cells(cells: &[char; 8], context_line: &str, line_no: usize) -> Result<(), CompileError> {
     for (idx, &ch) in cells.iter().enumerate() {
-        let ok = matches!(ch, '.' | 'N' | 'S' | 'l' | 'h' | 'b' | 'm' | 'B' | 'M' | '!');
-        if !ok {
-            return Err(
-                CompileError::new(
-                    "E4001",
-                    format!(
-                        "undefined step char (lane={idx}, char='{ch}', context={trimmed})"
-                    ),
-                    line_no,
-                )
-                .with_lane(idx as u8)
-                .with_context(trimmed.to_string()),
-            );
-        }
+        validate_step_cell(idx, ch, context_line, line_no)?;
+    }
+    Ok(())
+}
 
-        if idx != 0 && matches!(ch, 'S' | 'b' | 'm' | 'B' | 'M') {
-            return Err(
-                CompileError::new(
-                    "E4002",
-                    format!(
-                        "scratch-only char used on non-scratch lane (lane={idx}, char='{ch}', context={trimmed})"
-                    ),
-                    line_no,
-                )
-                .with_lane(idx as u8)
-                .with_context(trimmed.to_string()),
-            );
-        }
-
-        if idx != 0 && ch == '!' {
-            return Err(
-                CompileError::new(
-                    "E4003",
-                    format!(
-                        "'!' is only allowed on scratch lane (lane=0) (lane={idx}, context={trimmed})"
-                    ),
-                    line_no,
-                )
-                .with_lane(idx as u8)
-                .with_context(trimmed.to_string()),
-            );
-        }
-
-        if idx == 0 && matches!(ch, 'l' | 'h') {
-            return Err(
-                CompileError::new(
-                    "E4001",
-                    format!(
-                        "char not allowed on scratch lane (lane=0, char='{ch}', context={trimmed})"
-                    ),
-                    line_no,
-                )
-                .with_lane(0)
-                .with_context(trimmed.to_string()),
-            );
-        }
+fn validate_step_cell(idx: usize, ch: char, context_line: &str, line_no: usize) -> Result<(), CompileError> {
+    let ok = matches!(ch, '.' | 'N' | 'S' | 'l' | 'h' | 'b' | 'm' | 'B' | 'M' | '!');
+    if !ok {
+        return Err(
+            CompileError::new(
+                "E4001",
+                format!(
+                    "undefined step char (lane={idx}, char='{ch}', context={context_line})"
+                ),
+                line_no,
+            )
+            .with_ch(ch)
+            .with_lane(idx as u8)
+            .with_context(context_line.to_string()),
+        );
     }
 
-    let tail = chars.as_str().trim();
-    let (sound, rev) = parse_step_tail(tail, trimmed, line_no)?;
+    if idx != 0 && matches!(ch, 'S' | 'b' | 'm' | 'B' | 'M') {
+        return Err(
+            CompileError::new(
+                "E4002",
+                format!(
+                    "scratch-only char used on non-scratch lane (lane={idx}, char='{ch}', context={context_line})"
+                ),
+                line_no,
+            )
+            .with_lane(idx as u8)
+            .with_context(context_line.to_string()),
+        );
+    }
 
-    Ok(TrackLine::Step {
-        line: line_no,
-        cells,
-        sound,
-        rev,
-    })
+    if idx != 0 && ch == '!' {
+        return Err(
+            CompileError::new(
+                "E4003",
+                format!(
+                    "'!' is only allowed on scratch lane (lane=0) (lane={idx}, context={context_line})"
+                ),
+                line_no,
+            )
+            .with_lane(idx as u8)
+            .with_context(context_line.to_string()),
+        );
+    }
+
+    if idx == 0 && matches!(ch, 'l' | 'h') {
+        return Err(
+            CompileError::new(
+                "E4001",
+                format!(
+                    "char not allowed on scratch lane (lane=0, char='{ch}', context={context_line})"
+                ),
+                line_no,
+            )
+            .with_ch(ch)
+            .with_lane(0)
+            .with_context(context_line.to_string()),
+        );
+    }
+
+    Ok(())
 }
 
 fn parse_step_tail(
@@ -333,84 +351,16 @@ fn parse_rev_spec(s: &str, context_line: &str, line_no: usize) -> Result<RevSpec
 
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix("@rev_every") {
-            rest = after.trim_start();
-            let (tok, next) = split_first_token(rest);
-            let n: usize = tok
-                .parse()
-                .map_err(|_| {
-                    CompileError::new(
-                        "E1005",
-                        format!("invalid @rev_every (context={context_line})"),
-                        line_no,
-                    )
-                    .with_context(context_line.to_string())
-                })?;
-            if n < 1 {
-                return Err(
-                    CompileError::new(
-                        "E1005",
-                        format!("@rev_every must be >= 1 (context={context_line})"),
-                        line_no,
-                    )
-                    .with_context(context_line.to_string()),
-                );
-            }
+            let (n, next_rest) = parse_rev_every(after, context_line, line_no)?;
             spec.every = Some(n);
-            rest = next.trim_start();
+            rest = next_rest;
             continue;
         }
 
         if let Some(after) = rest.strip_prefix("@rev_at") {
-            rest = after.trim_start();
-            let (tok, next) = split_first_token(rest);
-            let list = tok.trim();
-            if list.is_empty() {
-                return Err(
-                    CompileError::new(
-                        "E1004",
-                        format!("empty @rev_at list (context={context_line})"),
-                        line_no,
-                    )
-                    .with_context(context_line.to_string()),
-                );
-            }
-            let mut values = Vec::new();
-            for part in list.split(',') {
-                let p = part.trim();
-                if p.is_empty() {
-                    return Err(
-                        CompileError::new(
-                            "E1004",
-                            format!("invalid @rev_at list (context={context_line})"),
-                            line_no,
-                        )
-                        .with_context(context_line.to_string()),
-                    );
-                }
-                let v: usize = p
-                    .parse()
-                    .map_err(|_| {
-                        CompileError::new(
-                            "E1004",
-                            format!("invalid @rev_at list (context={context_line})"),
-                            line_no,
-                        )
-                        .with_context(context_line.to_string())
-                    })?;
-                if v < 2 {
-                    return Err(
-                        CompileError::new(
-                            "E1004",
-                            format!("@rev_at values must be >= 2 (context={context_line})"),
-                            line_no,
-                        )
-                        .with_context(context_line.to_string()),
-                    );
-                }
-                values.push(v);
-            }
+            let (values, next_rest) = parse_rev_at(after, context_line, line_no)?;
             spec.at = values;
-            rest = next.trim_start();
+            rest = next_rest;
             continue;
         }
 
@@ -425,6 +375,94 @@ fn parse_rev_spec(s: &str, context_line: &str, line_no: usize) -> Result<RevSpec
     }
 
     Ok(spec)
+}
+
+fn parse_rev_every<'a>(
+    after_directive: &'a str,
+    context_line: &str,
+    line_no: usize,
+) -> Result<(usize, &'a str), CompileError> {
+    let rest = after_directive.trim_start();
+    let (tok, next) = split_first_token(rest);
+    let n: usize = tok
+        .parse()
+        .map_err(|_| {
+            CompileError::new(
+                "E1005",
+                format!("invalid @rev_every (context={context_line})"),
+                line_no,
+            )
+            .with_context(context_line.to_string())
+        })?;
+    if n < 1 {
+        return Err(
+            CompileError::new(
+                "E1005",
+                format!("@rev_every must be >= 1 (context={context_line})"),
+                line_no,
+            )
+            .with_context(context_line.to_string()),
+        );
+    }
+    Ok((n, next.trim_start()))
+}
+
+fn parse_rev_at<'a>(
+    after_directive: &'a str,
+    context_line: &str,
+    line_no: usize,
+) -> Result<(Vec<usize>, &'a str), CompileError> {
+    let rest = after_directive.trim_start();
+    let (tok, next) = split_first_token(rest);
+    let list = tok.trim();
+    if list.is_empty() {
+        return Err(
+            CompileError::new(
+                "E1004",
+                format!("empty @rev_at list (context={context_line})"),
+                line_no,
+            )
+            .with_context(context_line.to_string()),
+        );
+    }
+
+    let mut values = Vec::new();
+    for part in list.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            return Err(
+                CompileError::new(
+                    "E1004",
+                    format!("invalid @rev_at list (context={context_line})"),
+                    line_no,
+                )
+                .with_context(context_line.to_string()),
+            );
+        }
+        let v: usize = p
+            .parse()
+            .map_err(|_| {
+                CompileError::new(
+                    "E1004",
+                    format!("invalid @rev_at list (context={context_line})"),
+                    line_no,
+                )
+                .with_context(context_line.to_string())
+            })?;
+        if v < 2 {
+            return Err(
+                CompileError::new(
+                    "E1004",
+                    format!("@rev_at values must be >= 2 (context={context_line})"),
+                    line_no,
+                )
+                .with_context(context_line.to_string()),
+            );
+        }
+        values.push(v);
+    }
+
+    Ok((values, next.trim_start()))
 }
 
 fn split_first_token(s: &str) -> (&str, &str) {
@@ -446,48 +484,7 @@ fn parse_sound_spec(s: &str, context_line: &str, line_no: usize) -> Result<Sound
     }
 
     if s.starts_with('[') {
-        if !s.ends_with(']') {
-            return Err(
-                CompileError::new(
-                    "E1001",
-                    format!("invalid SOUND_SPEC array (context={context_line})"),
-                    line_no,
-                )
-                .with_context(context_line.to_string()),
-            );
-        }
-        let inner = &s[1..s.len() - 1];
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
-        if parts.len() != 8 {
-            return Err(
-                CompileError::new(
-                    "E1002",
-                    format!("SOUND_SPEC lane array must have 8 slots (context={context_line})"),
-                    line_no,
-                )
-                .with_context(context_line.to_string()),
-            );
-        }
-        let mut lanes: [Option<String>; 8] = std::array::from_fn(|_| None);
-        for (i, p) in parts.iter().enumerate() {
-            if p.is_empty() {
-                return Err(
-                    CompileError::new(
-                        "E1003",
-                        format!("invalid SOUND_SPEC slot (lane={i}, context={context_line})"),
-                        line_no,
-                    )
-                    .with_lane(i as u8)
-                    .with_context(context_line.to_string()),
-                );
-            }
-            if *p == "-" {
-                lanes[i] = None;
-            } else {
-                lanes[i] = Some((*p).to_string());
-            }
-        }
-        return Ok(SoundSpec::PerLane(lanes));
+        return parse_sound_array(s, context_line, line_no);
     }
 
     if s.contains(char::is_whitespace) {
@@ -501,6 +498,51 @@ fn parse_sound_spec(s: &str, context_line: &str, line_no: usize) -> Result<Sound
         );
     }
     Ok(SoundSpec::Single(s.to_string()))
+}
+
+fn parse_sound_array(s: &str, context_line: &str, line_no: usize) -> Result<SoundSpec, CompileError> {
+    if !s.ends_with(']') {
+        return Err(
+            CompileError::new(
+                "E1001",
+                format!("invalid SOUND_SPEC array (context={context_line})"),
+                line_no,
+            )
+            .with_context(context_line.to_string()),
+        );
+    }
+    let inner = &s[1..s.len() - 1];
+    let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+    if parts.len() != 8 {
+        return Err(
+            CompileError::new(
+                "E1002",
+                format!("SOUND_SPEC lane array must have 8 slots (context={context_line})"),
+                line_no,
+            )
+            .with_context(context_line.to_string()),
+        );
+    }
+    let mut lanes: [Option<String>; 8] = std::array::from_fn(|_| None);
+    for (i, p) in parts.iter().enumerate() {
+        if p.is_empty() {
+            return Err(
+                CompileError::new(
+                    "E1003",
+                    format!("invalid SOUND_SPEC slot (lane={i}, context={context_line})"),
+                    line_no,
+                )
+                .with_lane(i as u8)
+                .with_context(context_line.to_string()),
+            );
+        }
+        if *p == "-" {
+            lanes[i] = None;
+        } else {
+            lanes[i] = Some((*p).to_string());
+        }
+    }
+    Ok(SoundSpec::PerLane(lanes))
 }
 
 fn parse_tags_csv(s: &str, line_no: usize) -> Result<Vec<String>, CompileError> {

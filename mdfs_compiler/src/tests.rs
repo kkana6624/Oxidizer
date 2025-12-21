@@ -196,6 +196,7 @@ track: |
     assert_eq!(err.kind, CompileErrorKind::Semantic);
     assert_eq!(err.line, 8);
     assert_eq!(err.lane, Some(2));
+    assert_eq!(err.sound_id.as_deref(), Some("K01"));
     assert!(err.message.contains("sound_id=K01"));
     assert!(err.message.contains("lane=2"));
 }
@@ -227,6 +228,7 @@ fn error_code_sound_id_missing_in_manifest_is_e2101_with_sound_id_and_lane() {
     assert_eq!(err.kind, CompileErrorKind::Semantic);
     assert_eq!(err.line, 8);
     assert_eq!(err.lane, Some(2));
+    assert_eq!(err.sound_id.as_deref(), Some("K01"));
     assert!(err.message.contains("sound_id=K01"));
     assert!(err.message.contains("lane=2"));
 }
@@ -414,6 +416,8 @@ fn error_code_unclosed_toggle_is_e4101() {
     assert_eq!(err.step_index, Some(0));
     assert_eq!(err.time_us, Some(0));
     assert_eq!(err.lane, Some(1));
+    assert_eq!(err.start_line, Some(7));
+    assert_eq!(err.start_time_us, Some(0));
     assert!(err.message.contains("lane=1"));
     assert!(err.message.contains("start_line=7"));
     assert!(err.message.contains("start_time_us="));
@@ -473,6 +477,7 @@ fn parse_error_e4001_undefined_step_char_includes_lane_char_context() {
     assert_eq!(err.code, "E4001");
     assert_eq!(err.line, 7);
     assert_eq!(err.lane, Some(2));
+    assert_eq!(err.ch, Some('X'));
     assert_eq!(err.context.as_deref(), Some("..X....."));
     assert!(err.message.contains("lane=2"));
     assert!(err.message.contains("char='X'"));
@@ -486,6 +491,7 @@ fn parse_error_e4001_char_not_allowed_on_scratch_lane_includes_context() {
     assert_eq!(err.code, "E4001");
     assert_eq!(err.line, 7);
     assert_eq!(err.lane, Some(0));
+    assert_eq!(err.ch, Some('l'));
     assert_eq!(err.context.as_deref(), Some("l......."));
     assert!(err.message.contains("lane=0"));
     assert!(err.message.contains("char='l'"));

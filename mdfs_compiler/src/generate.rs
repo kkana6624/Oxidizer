@@ -25,6 +25,123 @@ struct OpenHold {
     marker_checkpoints_us: Vec<Microseconds>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartKind {
+    Tap,
+    HoldStart,
+}
+
+fn register_tap_start(
+    start_kinds: &mut HashMap<(Microseconds, u8), StartKind>,
+    time_us: Microseconds,
+    lane_u8: u8,
+    lane_for_message: usize,
+    step_index: usize,
+    line: usize,
+) -> Result<(), CompileError> {
+    if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+        if *existing == StartKind::HoldStart {
+            return Err(
+                CompileError::new(
+                    "E4004",
+                    format!(
+                        "tap overlaps hold start at same (time_us,lane) (time_us={time_us}, lane={lane_for_message})"
+                    ),
+                    line,
+                )
+                .with_step_index(step_index)
+                .with_time_us(time_us)
+                .with_lane(lane_u8),
+            );
+        }
+        return Ok(());
+    }
+
+    start_kinds.insert((time_us, lane_u8), StartKind::Tap);
+    Ok(())
+}
+
+fn register_hold_start(
+    start_kinds: &mut HashMap<(Microseconds, u8), StartKind>,
+    time_us: Microseconds,
+    lane_u8: u8,
+    lane_for_message: usize,
+    step_index: usize,
+    line: usize,
+) -> Result<(), CompileError> {
+    if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
+        if *existing == StartKind::Tap {
+            return Err(
+                CompileError::new(
+                    "E4004",
+                    format!(
+                        "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane={lane_for_message})"
+                    ),
+                    line,
+                )
+                .with_step_index(step_index)
+                .with_time_us(time_us)
+                .with_lane(lane_u8),
+            );
+        }
+        return Ok(());
+    }
+
+    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
+    Ok(())
+}
+
+fn handle_marker_checkpoint(
+    open: &mut [Option<OpenHold>],
+    bgm_events: &mut Vec<BgmEvent>,
+    time_us: Microseconds,
+    step_index: usize,
+    sound: &SoundSpec,
+    resources: &HashMap<String, String>,
+    line: usize,
+) -> Result<(), CompileError> {
+    // marker checkpoint only valid inside MSS/HMSS hold
+    let Some(open0) = &mut open[0] else {
+        return Err(
+            CompileError::new(
+                "E4003",
+                "'!' is only valid while MSS/HMSS is active",
+                line,
+            )
+            .with_step_index(step_index)
+            .with_time_us(time_us)
+            .with_lane(0),
+        );
+    };
+
+    match open0.kind {
+        OpenHoldKind::Mss { .. } | OpenHoldKind::HellMss { .. } => {
+            open0.marker_checkpoints_us.push(time_us);
+            push_bgm_events_from_sound(bgm_events, time_us, sound, resources, line)
+        }
+        OpenHoldKind::Bss | OpenHoldKind::HellBss => Err(
+            CompileError::new(
+                "E4102",
+                "'!' is not allowed while BSS/HBSS is active",
+                line,
+            )
+            .with_step_index(step_index)
+            .with_time_us(time_us)
+            .with_lane(0),
+        ),
+        _ => Err(
+            CompileError::new(
+                "E4003",
+                "'!' is only valid while MSS/HMSS is active",
+                line,
+            )
+            .with_step_index(step_index)
+            .with_time_us(time_us)
+            .with_lane(0),
+        ),
+    }
+}
+
 pub(crate) fn pass2_generate(
     track: &[TrackLine],
     step_times: &[Microseconds],
@@ -32,12 +149,6 @@ pub(crate) fn pass2_generate(
 ) -> Result<(Vec<Note>, Vec<BgmEvent>), CompileError> {
     let mut notes = Vec::new();
     let mut bgm_events = Vec::new();
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum StartKind {
-        Tap,
-        HoldStart,
-    }
     let mut start_kinds: HashMap<(Microseconds, u8), StartKind> = HashMap::new();
 
     let mut open: Vec<Option<OpenHold>> = vec![None; 8];
@@ -88,24 +199,14 @@ pub(crate) fn pass2_generate(
                             }
 
                             let lane_u8 = col as u8;
-                            if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
-                                if *existing == StartKind::HoldStart {
-                                    return Err(
-                                        CompileError::new(
-                                            "E4004",
-                                            format!(
-                                                "tap overlaps hold start at same (time_us,lane) (time_us={time_us}, lane={col})"
-                                            ),
-                                            *line,
-                                        )
-                                        .with_step_index(step_index)
-                                        .with_time_us(time_us)
-                                        .with_lane(lane_u8),
-                                    );
-                                }
-                            } else {
-                                start_kinds.insert((time_us, lane_u8), StartKind::Tap);
-                            }
+                            register_tap_start(
+                                &mut start_kinds,
+                                time_us,
+                                lane_u8,
+                                col,
+                                step_index,
+                                *line,
+                            )?;
 
                             notes.push(Note {
                                 time_us,
@@ -118,24 +219,14 @@ pub(crate) fn pass2_generate(
                             let is_start = open[col].is_none();
                             if is_start {
                                 let lane_u8 = col as u8;
-                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
-                                    if *existing == StartKind::Tap {
-                                        return Err(
-                                            CompileError::new(
-                                                "E4004",
-                                                format!(
-                                                    "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane={col})"
-                                                ),
-                                                *line,
-                                            )
-                                            .with_step_index(step_index)
-                                            .with_time_us(time_us)
-                                            .with_lane(lane_u8),
-                                        );
-                                    }
-                                } else {
-                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
-                                }
+                                register_hold_start(
+                                    &mut start_kinds,
+                                    time_us,
+                                    lane_u8,
+                                    col,
+                                    step_index,
+                                    *line,
+                                )?;
                             }
 
                             toggle_hold(
@@ -154,24 +245,14 @@ pub(crate) fn pass2_generate(
                             let is_start = open[col].is_none();
                             if is_start {
                                 let lane_u8 = col as u8;
-                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
-                                    if *existing == StartKind::Tap {
-                                        return Err(
-                                            CompileError::new(
-                                                "E4004",
-                                                format!(
-                                                    "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane={col})"
-                                                ),
-                                                *line,
-                                            )
-                                            .with_step_index(step_index)
-                                            .with_time_us(time_us)
-                                            .with_lane(lane_u8),
-                                        );
-                                    }
-                                } else {
-                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
-                                }
+                                register_hold_start(
+                                    &mut start_kinds,
+                                    time_us,
+                                    lane_u8,
+                                    col,
+                                    step_index,
+                                    *line,
+                                )?;
                             }
 
                             toggle_hold(
@@ -190,24 +271,14 @@ pub(crate) fn pass2_generate(
                             let is_start = open[0].is_none();
                             if is_start {
                                 let lane_u8 = 0u8;
-                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
-                                    if *existing == StartKind::Tap {
-                                        return Err(
-                                            CompileError::new(
-                                                "E4004",
-                                                format!(
-                                                    "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane=0)"
-                                                ),
-                                                *line,
-                                            )
-                                            .with_step_index(step_index)
-                                            .with_time_us(time_us)
-                                            .with_lane(0),
-                                        );
-                                    }
-                                } else {
-                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
-                                }
+                                register_hold_start(
+                                    &mut start_kinds,
+                                    time_us,
+                                    lane_u8,
+                                    0,
+                                    step_index,
+                                    *line,
+                                )?;
                             }
 
                             toggle_scratch_hold_end_se(
@@ -227,24 +298,14 @@ pub(crate) fn pass2_generate(
                             let is_start = open[0].is_none();
                             if is_start {
                                 let lane_u8 = 0u8;
-                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
-                                    if *existing == StartKind::Tap {
-                                        return Err(
-                                            CompileError::new(
-                                                "E4004",
-                                                format!(
-                                                    "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane=0)"
-                                                ),
-                                                *line,
-                                            )
-                                            .with_step_index(step_index)
-                                            .with_time_us(time_us)
-                                            .with_lane(0),
-                                        );
-                                    }
-                                } else {
-                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
-                                }
+                                register_hold_start(
+                                    &mut start_kinds,
+                                    time_us,
+                                    lane_u8,
+                                    0,
+                                    step_index,
+                                    *line,
+                                )?;
                             }
 
                             toggle_scratch_hold_end_se(
@@ -264,24 +325,14 @@ pub(crate) fn pass2_generate(
                             let is_start = open[0].is_none();
                             if is_start {
                                 let lane_u8 = 0u8;
-                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
-                                    if *existing == StartKind::Tap {
-                                        return Err(
-                                            CompileError::new(
-                                                "E4004",
-                                                format!(
-                                                    "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane=0)"
-                                                ),
-                                                *line,
-                                            )
-                                            .with_step_index(step_index)
-                                            .with_time_us(time_us)
-                                            .with_lane(0),
-                                        );
-                                    }
-                                } else {
-                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
-                                }
+                                register_hold_start(
+                                    &mut start_kinds,
+                                    time_us,
+                                    lane_u8,
+                                    0,
+                                    step_index,
+                                    *line,
+                                )?;
                             }
 
                             toggle_mss(
@@ -302,24 +353,14 @@ pub(crate) fn pass2_generate(
                             let is_start = open[0].is_none();
                             if is_start {
                                 let lane_u8 = 0u8;
-                                if let Some(existing) = start_kinds.get(&(time_us, lane_u8)) {
-                                    if *existing == StartKind::Tap {
-                                        return Err(
-                                            CompileError::new(
-                                                "E4004",
-                                                format!(
-                                                    "hold start overlaps tap at same (time_us,lane) (time_us={time_us}, lane=0)"
-                                                ),
-                                                *line,
-                                            )
-                                            .with_step_index(step_index)
-                                            .with_time_us(time_us)
-                                            .with_lane(0),
-                                        );
-                                    }
-                                } else {
-                                    start_kinds.insert((time_us, lane_u8), StartKind::HoldStart);
-                                }
+                                register_hold_start(
+                                    &mut start_kinds,
+                                    time_us,
+                                    lane_u8,
+                                    0,
+                                    step_index,
+                                    *line,
+                                )?;
                             }
 
                             toggle_mss(
@@ -337,56 +378,15 @@ pub(crate) fn pass2_generate(
                             )?
                         }
                         '!' => {
-                            // marker checkpoint only valid inside MSS/HMSS hold
-                            let Some(open0) = &mut open[0] else {
-                                return Err(
-                                    CompileError::new(
-                                        "E4003",
-                                        "'!' is only valid while MSS/HMSS is active",
-                                        *line,
-                                    )
-                                    .with_step_index(step_index)
-                                    .with_time_us(time_us)
-                                    .with_lane(0),
-                                );
-                            };
-
-                            match open0.kind {
-                                OpenHoldKind::Mss { .. } | OpenHoldKind::HellMss { .. } => {
-                                    open0.marker_checkpoints_us.push(time_us);
-                                    push_bgm_events_from_sound(
-                                        &mut bgm_events,
-                                        time_us,
-                                        sound,
-                                        resources,
-                                        *line,
-                                    )?;
-                                }
-                                OpenHoldKind::Bss | OpenHoldKind::HellBss => {
-                                    return Err(
-                                        CompileError::new(
-                                            "E4102",
-                                            "'!' is not allowed while BSS/HBSS is active",
-                                            *line,
-                                        )
-                                        .with_step_index(step_index)
-                                        .with_time_us(time_us)
-                                        .with_lane(0),
-                                    );
-                                }
-                                _ => {
-                                    return Err(
-                                        CompileError::new(
-                                            "E4003",
-                                            "'!' is only valid while MSS/HMSS is active",
-                                            *line,
-                                        )
-                                        .with_step_index(step_index)
-                                        .with_time_us(time_us)
-                                        .with_lane(0),
-                                    );
-                                }
-                            }
+                            handle_marker_checkpoint(
+                                &mut open,
+                                &mut bgm_events,
+                                time_us,
+                                step_index,
+                                sound,
+                                resources,
+                                *line,
+                            )?;
                         }
                         _ => unreachable!(),
                     }
@@ -411,7 +411,9 @@ pub(crate) fn pass2_generate(
                 )
                 .with_lane(col as u8)
                 .with_step_index(h.start_step_index)
-                .with_time_us(h.start_time_us),
+                .with_time_us(h.start_time_us)
+                .with_start_line(h.start_line)
+                .with_start_time_us(h.start_time_us),
             );
         }
     }
@@ -445,7 +447,8 @@ fn validate_sound_id(
                 None => format!("sound_id referenced but no manifest loaded (sound_id={sound_id})"),
             },
             line,
-        );
+        )
+        .with_sound_id(sound_id);
         if let Some(lane_u8) = lane_u8 {
             err = err.with_lane(lane_u8);
         }
@@ -462,7 +465,8 @@ fn validate_sound_id(
                 None => format!("sound_id not found in manifest (sound_id={sound_id})"),
             },
             line,
-        );
+        )
+        .with_sound_id(sound_id);
         if let Some(lane_u8) = lane_u8 {
             err = err.with_lane(lane_u8);
         }
