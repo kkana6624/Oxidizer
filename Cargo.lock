@@ -146,6 +146,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "mdf_schema",
  "mdfs_compiler",
  "serde_json",
 ]

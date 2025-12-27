@@ -1,0 +1,74 @@
+@title Mixed Pattern Example
+@artist Example Artist
+@version 2.2
+@tags training, scratch, cn, mss
+@sound_manifest sounds.json
+track: |
+    @bpm 150
+    @div 16
+
+    # --- Measure 1 (Standard Rhythm) ---
+    # 基本的な8ビート
+    S....... : [S01,-,-,-,-,-,-,-]
+    ..N..... : [-,-,K01,-,-,-,-,-]
+    S....... : [S01,-,-,-,-,-,-,-]
+    ..N..... : [-,-,K01,-,-,-,-,-]
+
+    # --- Measure 2 (Mixed CN) ---
+    # 左手(Col 1)でCNを押しながら、右手(Col 7)でTapを刻む
+
+    .l.....N : [-,L01,-,-,-,-,-,K01]   # <--- Col 1: CN Start, Col 7: Tap (レーン別SE)
+    .......N :       # <--- Col 1: Holding,  Col 7: Tap
+    .......N :       # <--- Col 1: Holding,  Col 7: Tap
+    .l.....N :       # <--- Col 1: CN End,   Col 7: Tap
+
+    # --- Measure 3 (Complex) ---
+    # 皿(Col 0)のCNと、鍵盤のTap
+
+    b..N.... : [S_LP,-,-,K01,-,-,-,-]  # <--- BSS Start (Col 0) + 同時Tap
+    ...N.... :
+    ...N.... :
+    b....... : [SE_END,-,-,-,-,-,-,-]  # <--- BSS End (Col 0) 終点SEはBgmEvent
+
+    # --- Measure 4 (Multi Spin Scratch) ---
+    # MSSは譜面データ上は「長さを持つスクラッチ」として表現し、
+    # 中間チェックポイントおよび終点で逆方向入力が必要（判定はランナー側）。
+    m....... : [S_MS,-,-,-,-,-,-,-] @rev_every 4  # <--- MSS Start (Col 0)
+    ........ :
+    ........ :
+    m....... : [SE_END,-,-,-,-,-,-,-]  # <--- MSS End (Col 0) 終点SEはBgmEvent
+
+    # --- Measure 5 (Complex MSS: Directives) ---
+    # 周期(4分刻み) + 任意指定(複合)を同時に使う例（集合化）。
+    # 例: @rev_every 4 -> 5,9,13... に加え、@rev_at 8,13 を追加。
+    m....... : [S_MS2,-,-,-,-,-,-,-] @rev_every 4 @rev_at 8,13
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    m....... :
+
+    # --- Measure 6 (Complex MSS: Visual Markers) ---
+    # `!` を置いた行が中間チェックポイントになる（複合的な刻みを視覚的に表現）。
+    # この例では 5,8,13 ステップ目に `!` を置いている。
+    m....... : [S_MS3,-,-,-,-,-,-,-]
+    ........ :
+    ........ :
+    ........ :
+    !....... : [SE_CP,-,-,-,-,-,-,-]   # step 5 (中間点SEはBgmEvent)
+    ........ :
+    ........ :
+    !....... : [SE_CP,-,-,-,-,-,-,-]   # step 8
+    ........ :
+    ........ :
+    ........ :
+    ........ :
+    !....... : [SE_CP,-,-,-,-,-,-,-]   # step 13
+    m....... :

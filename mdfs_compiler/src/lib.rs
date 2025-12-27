@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use mdf_schema::{Metadata, MdfChart, SpeedEvent, VisualEvent};
+use mdf_schema::{MdfChart, Metadata};
 
 mod error;
 mod generate;
@@ -31,11 +31,10 @@ pub struct CompileOptions {
 /// `code`, `message` and `line` (structured fields are available separately).
 pub fn compile_file(path: impl AsRef<Path>) -> Result<MdfChart, CompileError> {
     let path = path.as_ref();
-    let src = fs::read_to_string(path)
-           .map_err(|e| {
-               CompileError::new("E2001", format!("failed to read input .mdfs: {e}"), 0)
-                   .with_file(path.display().to_string())
-           })?;
+    let src = fs::read_to_string(path).map_err(|e| {
+        CompileError::new("E2001", format!("failed to read input .mdfs: {e}"), 0)
+            .with_file(path.display().to_string())
+    })?;
     let base_dir = path.parent().map(|p| p.to_path_buf());
     compile_str_with_options(&src, CompileOptions { base_dir })
 }
@@ -46,12 +45,17 @@ pub fn compile_str(src: &str) -> Result<MdfChart, CompileError> {
 }
 
 /// Compile `.mdfs` source text into an `MdfChart` with options.
-pub fn compile_str_with_options(src: &str, options: CompileOptions) -> Result<MdfChart, CompileError> {
+pub fn compile_str_with_options(
+    src: &str,
+    options: CompileOptions,
+) -> Result<MdfChart, CompileError> {
     let parsed = parser::parse_mdfs(src)?;
 
     let resources = resources::load_resources(&parsed, &options)?;
-    let (step_times, _step_durations) = time_map::pass1_time_map(&parsed.track)?;
-    let (mut notes, mut bgm_events) = generate::pass2_generate(&parsed.track, &step_times, &resources)?;
+    let (step_times, _step_durations, visual_events, speed_events) =
+        time_map::pass1_time_map(&parsed.track)?;
+    let (mut notes, mut bgm_events) =
+        generate::pass2_generate(&parsed.track, &step_times, &resources)?;
 
     notes.sort_by_key(|n| n.time_us);
     bgm_events.sort_by_key(|e| e.time_us);
@@ -77,8 +81,8 @@ pub fn compile_str_with_options(src: &str, options: CompileOptions) -> Result<Md
     Ok(MdfChart {
         meta,
         resources,
-        visual_events: Vec::<VisualEvent>::new(),
-        speed_events: Vec::<SpeedEvent>::new(),
+        visual_events,
+        speed_events,
         notes,
         bgm_events,
     })
