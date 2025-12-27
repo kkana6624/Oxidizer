@@ -1,28 +1,59 @@
-use mdf_schema::Microseconds;
+use mdf_schema::{Microseconds, SpeedEvent, VisualEvent};
 
 use crate::CompileError;
 use crate::parser::{Directive, TrackLine};
 
 pub(crate) fn pass1_time_map(
     track: &[TrackLine],
-) -> Result<(Vec<Microseconds>, Vec<Microseconds>), CompileError> {
+) -> Result<
+    (
+        Vec<Microseconds>,
+        Vec<Microseconds>,
+        Vec<VisualEvent>,
+        Vec<SpeedEvent>,
+    ),
+    CompileError,
+> {
     let mut bpm: Option<f64> = None;
     let mut div: Option<u32> = None;
     let mut current_time_us: Microseconds = 0;
     let mut starts = Vec::new();
     let mut durs = Vec::new();
+    let mut visual_events = Vec::new();
+    let speed_events = Vec::new();
+
+    // Track the last recorded BPM to avoid redundant events
+    let mut last_recorded_bpm: Option<f64> = None;
 
     for line in track {
         match line {
-            TrackLine::Directive { line: _line, directive } => match directive {
-                Directive::Bpm(v) => bpm = Some(*v),
+            TrackLine::Directive {
+                line: _line,
+                directive,
+            } => match directive {
+                Directive::Bpm(v) => {
+                    bpm = Some(*v);
+                    // Emit VisualEvent for BPM change
+                    if last_recorded_bpm != Some(*v) {
+                        visual_events.push(VisualEvent {
+                            time_us: current_time_us,
+                            bpm: *v,
+                            is_measure_line: false,
+                            beat_n: 0,
+                            beat_d: 0,
+                        });
+                        last_recorded_bpm = Some(*v);
+                    }
+                }
                 Directive::Div(v) => div = Some(*v),
             },
             TrackLine::Step { line, .. } => {
-                let bpm = bpm
-                    .ok_or_else(|| CompileError::new("E3001", "@bpm is required before step lines", *line))?;
-                let div = div
-                    .ok_or_else(|| CompileError::new("E3002", "@div is required before step lines", *line))?;
+                let bpm = bpm.ok_or_else(|| {
+                    CompileError::new("E3001", "@bpm is required before step lines", *line)
+                })?;
+                let div = div.ok_or_else(|| {
+                    CompileError::new("E3002", "@div is required before step lines", *line)
+                })?;
                 let dur = step_duration_us(bpm, div, *line)?;
                 starts.push(current_time_us);
                 durs.push(dur);
@@ -32,7 +63,7 @@ pub(crate) fn pass1_time_map(
             }
         }
     }
-    Ok((starts, durs))
+    Ok((starts, durs, visual_events, speed_events))
 }
 
 fn step_duration_us(bpm: f64, div: u32, line: usize) -> Result<Microseconds, CompileError> {

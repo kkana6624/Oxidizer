@@ -8,3 +8,4 @@ mdfs_compiler = { path = "../mdfs_compiler" }
 serde_json = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+mdf_schema = { version = "0.1.0", path = "../mdf_schema" }

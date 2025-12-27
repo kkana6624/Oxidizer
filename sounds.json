@@ -1,0 +1,12 @@
+{
+    "K01": "kick1.wav",
+    "K02": "kick2.wav",
+    "L01": "long1.wav",
+    "S01": "scratch.wav",
+    "S_LP": "scratch_long.wav",
+    "S_MS": "scratch_mss.wav",
+    "S_MS2": "scratch_mss2.wav",
+    "S_MS3": "scratch_mss3.wav",
+    "SE_END": "se_end.wav",
+    "SE_CP": "se_checkpoint.wav"
+}
